@@ -8,7 +8,8 @@
     "deploy": "pnpm --filter @ima/web build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "typecheck": "tsc -p .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "preview": "pnpm --filter @ima/web build && wrangler preview"
   },
   "dependencies": {
     "hono": "^4.13.9"

@@ -3,15 +3,48 @@
   "name": "ima",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-20",
-  "observability": { "enabled": true },
+  // Production is served only on the custom domain below.
+  "workers_dev": false,
+  // preview_urls defaults to workers_dev (false here), so it needs to be
+  // opted back in explicitly — otherwise branch Previews
+  // (<branch>-ima.<subdomain>.workers.dev) and version URLs never get a
+  // *.workers.dev URL to view at all.
+  "preview_urls": true,
+  // Custom domain — requires piconic.ai to be on Cloudflare DNS.
+  // Cloudflare auto-provisions the CNAME and TLS certificate.
   "routes": [{ "pattern": "ima.piconic.ai", "custom_domain": true }],
+  // The web editor (built by @ima/web) is served by Workers Assets; only /api/*
+  // reaches the Worker script. Any other path falls back to index.html.
   "assets": {
     "directory": "../web/dist",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  // Keep invocation logs in Workers Logs (Cloudflare dashboard → ima Worker →
+  // Observability). Only paths and status codes are logged; the key lives in
+  // the URL fragment and never reaches the Worker.
+  "observability": { "enabled": true },
   "durable_objects": {
     "bindings": [{ "name": "ROOM", "class_name": "Room" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  // Worker Previews: every push to a branch other than `release` makes (or
+  // updates) that branch's Preview via Cloudflare Workers Builds, whose
+  // Preview command runs `pnpm run preview`. Previews never become the
+  // production deployment. They inherit no bindings from the settings above,
+  // so the Room binding is declared again here; each Preview gets its own
+  // Durable Object namespace automatically.
+  "previews": {
+    "durable_objects": {
+      "bindings": [{ "name": "ROOM", "class_name": "Room" }]
+    },
+    // Per-Preview logs and traces: Cloudflare dashboard → ima Worker →
+    // Previews → <branch> → Observability. (`wrangler tail` can't target
+    // Previews.)
+    "observability": {
+      "enabled": true,
+      "logs": { "enabled": true, "invocation_logs": true },
+      "traces": { "enabled": true, "head_sampling_rate": 1 }
+    }
+  }
 }

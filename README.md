@@ -52,19 +52,45 @@ IMA_SERVER=http://localhost:8787 node packages/cli/dist/ima.js notes.md
 | `packages/cli` | The `ima` command, published as `@piconic/ima` |
 | `packages/web` | CodeMirror 6 editor for collaborators |
 
-## Deploying the server
+## Releases and deploys
 
-The Worker runs on the Workers Free plan. It uses a SQLite-backed Durable Object and no D1 or KV.
+Production (`ima.piconic.ai`) deploys when a tagpr release PR is merged
+(see `.github/workflows/tagpr.yml`): the merge tags the release, the workflow
+fast-forwards the `release` branch to the tag, and Cloudflare Workers Builds
+deploys `release`. Every other branch gets its own
+[Worker Preview](https://developers.cloudflare.com/workers/previews/) on push, at
+`https://<branch-name>-ima.<subdomain>.workers.dev`, with its own Durable Object
+namespace and its own logs under the Preview's Observability tab (Cloudflare
+dashboard → ima Worker → Previews). Previews are configured by the `previews`
+block in `packages/worker/wrangler.jsonc`.
 
-1. `pnpm dlx wrangler login`
-2. Make sure the `piconic.ai` zone is on the same Cloudflare account. `wrangler.jsonc` binds the Worker to the custom domain `ima.piconic.ai`.
-3. `pnpm --filter @ima/worker deploy` (builds the web editor, then runs `wrangler deploy`)
-4. Open `https://ima.piconic.ai` and check that the landing page loads.
+To try a Preview with the CLI:
 
-The Free plan allows 100,000 requests a day. Move to the Paid plan when usage grows.
+```sh
+IMA_SERVER=https://<branch-name>-ima.<subdomain>.workers.dev npx @piconic/ima notes.md
+```
+
+Workers Builds settings (Cloudflare dashboard → ima Worker → Settings → Build):
+
+| Setting | Value |
+| --- | --- |
+| Git repository | `piconic-ai/ima` |
+| Root directory | `/` |
+| Production branch | `release` |
+| Build command | *(empty)* |
+| Deploy command | `pnpm run deploy` |
+| Non-production branch builds | enabled |
+| Preview command | `pnpm run preview` |
+
+The Worker runs on the Workers Free plan (100,000 requests a day). It uses a
+SQLite-backed Durable Object and no D1 or KV. `piconic.ai` must be on the same
+Cloudflare account for the custom domain.
 
 ## Publishing the CLI
 
-1. Bump `version` in `packages/cli/package.json`.
+The CLI shares the release version: tagpr bumps `version` in
+`packages/cli/package.json`.
+
+1. After the release PR is merged, check out the tag.
 2. `cd packages/cli && npm publish` (`prepublishOnly` typechecks, tests and bundles into `dist/ima.js`; the package has no runtime dependencies).
 3. On another machine, check that `npx @piconic/ima notes.md` works.
