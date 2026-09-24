@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
 import { generateKey, importKey, RoomClient, type RoomStatus, type SocketLike } from '@ima/protocol'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -45,7 +46,7 @@ export async function startSession(opts: SessionOptions): Promise<Session> {
   const text = doc.getText('content')
   text.insert(0, content)
   const awareness = new Awareness(doc)
-  awareness.setLocalState({ role: 'host', name: opts.name ?? 'host' })
+  awareness.setLocalState({ role: 'host', name: opts.name ?? 'host', file: basename(opts.file) })
 
   const writer = new FileWriter(opts.file, content, opts.writeDelayMs, opts.onError)
   const client = new RoomClient({
