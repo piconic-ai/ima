@@ -30,7 +30,7 @@ jobs:
         uses: pullfrog/pullfrog@ce127b38d7f0c6c5e2c40ccd290adc4c5652357f # v0.1.82
         with:
           prompt: ${{ inputs.prompt }}
-          model: anthropic/claude-sonnet
+          model: anthropic/claude-opus
           push: restricted
           timeout: 20m
         env:
