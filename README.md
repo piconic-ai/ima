@@ -21,6 +21,7 @@ notes.md  <->  ima CLI  <--wss-->  Worker -> Room (Durable Object)  <--wss-->  b
 - Every update is encrypted end to end (AES-GCM) with a key that lives only in the link's `#fragment`. Browsers never send the fragment to the server, so the server only relays ciphertext it cannot read.
 - Documents are synced with [Yjs](https://yjs.dev). Edits you make to the file in your own editor while sharing are streamed to the room too.
 - Anyone with the link can edit. Share it like you would share a Google Docs link.
+- A room lives only while you are connected. When you press Ctrl+C (or lose your connection), everyone is disconnected and nothing is left on the server.
 
 ## Requirements
 

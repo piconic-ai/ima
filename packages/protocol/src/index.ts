@@ -1,4 +1,5 @@
 export * from './cipher.ts'
+export * from './close.ts'
 export * from './key.ts'
 export * from './message.ts'
 export * from './room.ts'
