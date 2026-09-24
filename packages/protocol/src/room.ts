@@ -1,0 +1,220 @@
+import * as decoding from 'lib0/decoding'
+import * as encoding from 'lib0/encoding'
+import * as awarenessProtocol from 'y-protocols/awareness'
+import * as syncProtocol from 'y-protocols/sync'
+import type * as Y from 'yjs'
+import { decrypt, encrypt } from './cipher.ts'
+import { decodeMessage, encodeMessage, MessageType } from './message.ts'
+
+export type RoomStatus = 'connecting' | 'connected' | 'disconnected'
+
+/** The subset of the WebSocket API used by RoomClient (browser and Node.js 22+ globals both fit). */
+export interface SocketLike {
+  binaryType: string
+  readonly readyState: number
+  onopen: ((ev: unknown) => void) | null
+  onmessage: ((ev: { data: unknown }) => void) | null
+  onclose: ((ev: unknown) => void) | null
+  onerror: ((ev: unknown) => void) | null
+  send(data: Uint8Array): void
+  close(code?: number, reason?: string): void
+}
+
+export interface RoomClientOptions {
+  /** WebSocket URL of the room. Must never contain the key. */
+  url: string
+  key: CryptoKey
+  doc: Y.Doc
+  awareness: awarenessProtocol.Awareness
+  createSocket?: (url: string) => SocketLike
+  minBackoffMs?: number
+  maxBackoffMs?: number
+  onStatus?: (status: RoomStatus) => void
+  onError?: (error: unknown) => void
+}
+
+const OPEN = 1
+
+/**
+ * Keeps a Y.Doc and Awareness in sync with every other peer in a room.
+ *
+ * The server is a dumb relay, so the peers run a symmetric protocol: on connect a
+ * peer sends SyncStep1 (to pull what it is missing), its full state as an update
+ * (to push what others are missing) and its awareness state. Every peer answers
+ * SyncStep1 with SyncStep2. All frames are end-to-end encrypted.
+ */
+export class RoomClient {
+  readonly doc: Y.Doc
+  readonly awareness: awarenessProtocol.Awareness
+  status: RoomStatus = 'disconnected'
+
+  private readonly opts: RoomClientOptions
+  private socket: SocketLike | null = null
+  private attempts = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private destroyed = false
+  private sendChain: Promise<void> = Promise.resolve()
+  private receiveChain: Promise<void> = Promise.resolve()
+
+  constructor(opts: RoomClientOptions) {
+    this.opts = opts
+    this.doc = opts.doc
+    this.awareness = opts.awareness
+    this.doc.on('update', this.handleDocUpdate)
+    this.awareness.on('update', this.handleAwarenessUpdate)
+    this.awareness.on('change', this.handleAwarenessChange)
+  }
+
+  connect(): void {
+    if (this.destroyed || this.socket) return
+    this.setStatus('connecting')
+    const createSocket =
+      this.opts.createSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike)
+    const socket = createSocket(this.opts.url)
+    socket.binaryType = 'arraybuffer'
+    this.socket = socket
+
+    socket.onopen = () => {
+      if (this.socket !== socket) return
+      this.attempts = 0
+      this.setStatus('connected')
+      this.sendSync((encoder) => syncProtocol.writeSyncStep1(encoder, this.doc))
+      this.sendSync((encoder) => syncProtocol.writeSyncStep2(encoder, this.doc))
+      this.sendAwareness([this.doc.clientID])
+    }
+    socket.onmessage = (ev) => {
+      if (this.socket !== socket) return
+      const data = toBytes(ev.data)
+      if (!data) return
+      this.receiveChain = this.receiveChain
+        .then(() => this.receive(data))
+        .catch((error) => this.opts.onError?.(error))
+    }
+    socket.onclose = () => {
+      if (this.socket !== socket) return
+      this.socket = null
+      this.dropRemoteAwareness()
+      this.setStatus('disconnected')
+      this.scheduleReconnect()
+    }
+    socket.onerror = (error) => {
+      this.opts.onError?.(error)
+    }
+  }
+
+  /** Announces departure, closes the socket and stops reconnecting. */
+  async destroy(): Promise<void> {
+    if (this.destroyed) return
+    awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'local')
+    await this.sendChain
+    this.destroyed = true
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.doc.off('update', this.handleDocUpdate)
+    this.awareness.off('update', this.handleAwarenessUpdate)
+    this.awareness.off('change', this.handleAwarenessChange)
+    const socket = this.socket
+    this.socket = null
+    socket?.close()
+    this.setStatus('disconnected')
+  }
+
+  private async receive(data: Uint8Array): Promise<void> {
+    const message = decodeMessage(await decrypt(this.opts.key, data))
+    const decoder = decoding.createDecoder(message.payload)
+    if (message.type === MessageType.Sync) {
+      const encoder = encoding.createEncoder()
+      syncProtocol.readSyncMessage(decoder, encoder, this.doc, this)
+      if (encoding.length(encoder) > 0) {
+        this.send(MessageType.Sync, encoding.toUint8Array(encoder))
+      }
+    } else {
+      awarenessProtocol.applyAwarenessUpdate(
+        this.awareness,
+        decoding.readVarUint8Array(decoder),
+        this,
+      )
+    }
+  }
+
+  private handleDocUpdate = (update: Uint8Array, origin: unknown) => {
+    if (origin === this) return
+    this.sendSync((encoder) => syncProtocol.writeUpdate(encoder, update))
+  }
+
+  private handleAwarenessUpdate = (
+    { added, updated, removed }: AwarenessChanges,
+    origin: unknown,
+  ) => {
+    if (origin === this) return
+    this.sendAwareness([...added, ...updated, ...removed])
+  }
+
+  // Someone new showed up: tell them about us right away instead of waiting for the
+  // periodic awareness renewal.
+  private handleAwarenessChange = ({ added }: AwarenessChanges, origin: unknown) => {
+    if (origin === this && added.length > 0) this.sendAwareness([this.doc.clientID])
+  }
+
+  private dropRemoteAwareness(): void {
+    const remote = [...this.awareness.getStates().keys()].filter((id) => id !== this.doc.clientID)
+    awarenessProtocol.removeAwarenessStates(this.awareness, remote, this)
+  }
+
+  private sendSync(write: (encoder: encoding.Encoder) => void): void {
+    const encoder = encoding.createEncoder()
+    write(encoder)
+    this.send(MessageType.Sync, encoding.toUint8Array(encoder))
+  }
+
+  private sendAwareness(clients: number[]): void {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(this.awareness, clients),
+    )
+    this.send(MessageType.Awareness, encoding.toUint8Array(encoder))
+  }
+
+  // Encryption is async; chain sends so frames leave in the order they were produced.
+  private send(type: MessageType, payload: Uint8Array): void {
+    const socket = this.socket
+    if (!socket || socket.readyState !== OPEN) return
+    const plaintext = encodeMessage(type, payload)
+    this.sendChain = this.sendChain
+      .then(async () => {
+        const data = await encrypt(this.opts.key, plaintext)
+        if (socket.readyState === OPEN) socket.send(data)
+      })
+      .catch((error) => this.opts.onError?.(error))
+  }
+
+  private scheduleReconnect(): void {
+    if (this.destroyed) return
+    const min = this.opts.minBackoffMs ?? 500
+    const max = this.opts.maxBackoffMs ?? 30_000
+    const delay = Math.min(max, min * 2 ** this.attempts) * (0.5 + Math.random() / 2)
+    this.attempts++
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this.connect()
+    }, delay)
+  }
+
+  private setStatus(status: RoomStatus): void {
+    if (this.status === status) return
+    this.status = status
+    this.opts.onStatus?.(status)
+  }
+}
+
+interface AwarenessChanges {
+  added: number[]
+  updated: number[]
+  removed: number[]
+}
+
+function toBytes(data: unknown): Uint8Array | null {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data)
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+  return null
+}

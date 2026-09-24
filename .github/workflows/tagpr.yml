@@ -1,0 +1,70 @@
+name: tagpr
+
+# Every push to main makes tagpr open (or update) a release PR that bumps the
+# version in packages/cli/package.json and updates CHANGELOG.md. Merging that PR
+# creates the tag.
+#
+# Deploys are done by Cloudflare Workers Builds (Cloudflare's Git integration,
+# Production branch = release). Workers Builds only has push triggers and cannot
+# deploy on tags alone, so this workflow moves the release branch through the
+# GitHub API (GITHUB_TOKEN) only when a tag was created. Ordinary pushes to main
+# (which only refresh the release PR) create no tag, so release stays put and
+# nothing is deployed.
+#
+# The branch is advanced with the GitHub API (PATCH .../git/refs/heads/release,
+# force=false) rather than git push: there is no checkout at all and the server
+# decides whether it is a fast-forward. A shallow clone missing older commits
+# cannot cause a spurious "fetch first" rejection, a non-fast-forward is still
+# refused thanks to force=false, and the job does not grow heavier as the
+# history does (no fetch-depth: 0 for this step).
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+concurrency:
+  group: release-tagpr
+  cancel-in-progress: false
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tagpr.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: tagpr
+        uses: Songmu/tagpr@7ebae2dcc300132baa7cc9dd108c8923b07fc366 # v1.20.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  advance-release-branch:
+    name: Advance release branch
+    needs: tagpr
+    if: needs.tagpr.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.tagpr.outputs.tag }}
+    steps:
+      - name: Advance release to this tag (fast-forward only, no checkout needed)
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/release" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/release" \
+              -f sha="$sha" -F force=false
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/heads/release -f sha="$sha"
+          fi
