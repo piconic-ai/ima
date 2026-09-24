@@ -1,6 +1,6 @@
 {
   "name": "@piconic/ima",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Co-edit a local Markdown file with others, right now. End-to-end encrypted.",
   "keywords": [
     "markdown",
