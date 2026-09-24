@@ -9,6 +9,7 @@
     "yjs",
     "cli"
   ],
+  "license": "MIT",
   "homepage": "https://github.com/piconic-ai/ima#readme",
   "repository": {
     "type": "git",
@@ -34,7 +35,7 @@
     "typecheck": "tsc -p .",
     "test": "vitest run",
     "prepublishOnly": "pnpm run typecheck && pnpm run test && pnpm run build",
-    "prepack": "cp ../../README.md README.md"
+    "prepack": "cp ../../README.md ../../LICENSE ."
   },
   "devDependencies": {
     "@ima/protocol": "workspace:^",
