@@ -9,7 +9,13 @@ afterEach(async () => {
   for (const c of clients.splice(0)) await c.destroy()
 })
 
-async function join(relay: Relay, key: CryptoKey, init?: string, state?: Record<string, unknown>) {
+async function join(
+  relay: Relay,
+  key: CryptoKey,
+  init?: string,
+  state?: Record<string, unknown>,
+  headers?: Record<string, string>,
+) {
   const doc = new Y.Doc()
   if (init) doc.getText('content').insert(0, init)
   const awareness = new Awareness(doc)
@@ -19,6 +25,7 @@ async function join(relay: Relay, key: CryptoKey, init?: string, state?: Record<
     key,
     doc,
     awareness,
+    headers,
     createSocket: relay.create,
   })
   clients.push(client)
@@ -113,5 +120,31 @@ describe('RoomClient', () => {
     for (const s of relay.sockets) s.close()
     await vi.waitFor(() => expect(a.status).toBe('disconnected'))
     await vi.waitFor(() => expect(a.status).toBe('connected'), { timeout: 3000 })
+  })
+
+  it('passes handshake headers to the socket', async () => {
+    const relay = new Relay()
+    await join(relay, await importKey(generateKey()), '', undefined, { Authorization: 'Bearer t' })
+    expect(relay.headers).toEqual([{ Authorization: 'Bearer t' }])
+  })
+
+  it('stops for good when the host leaves', async () => {
+    const relay = new Relay({ hosted: true })
+    const key = await importKey(generateKey())
+    const host = await join(relay, key, 'x', undefined, { Authorization: 'Bearer t' })
+    await vi.waitFor(() => expect(host.status).toBe('connected'))
+    const guest = await join(relay, key)
+    await vi.waitFor(() => expect(text(guest)).toBe('x'))
+    await host.destroy()
+    await vi.waitFor(() => expect(guest.status).toBe('closed'))
+    await new Promise((r) => setTimeout(r, 1500))
+    expect(guest.status).toBe('closed')
+    expect(relay.urls).toHaveLength(2)
+  })
+
+  it('is turned away from a room without a host', async () => {
+    const relay = new Relay({ hosted: true })
+    const guest = await join(relay, await importKey(generateKey()))
+    await vi.waitFor(() => expect(guest.status).toBe('closed'))
   })
 })

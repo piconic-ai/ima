@@ -12,6 +12,7 @@
     "preview": "pnpm --filter @ima/web build && wrangler preview"
   },
   "dependencies": {
+    "@ima/protocol": "workspace:^",
     "hono": "^4.13.9"
   },
   "devDependencies": {

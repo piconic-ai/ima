@@ -1,4 +1,5 @@
 import { markdown } from '@codemirror/lang-markdown'
+import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { importKey, RoomClient, type RoomStatus } from '@ima/protocol'
 import { basicSetup } from 'codemirror'
@@ -89,12 +90,16 @@ async function joinRoom(id: string, key: string, name: string): Promise<void> {
   const status = h('span', { className: 'status' }, [h('span', { className: 'dot' }), h('span')])
   const file = h('span', { className: 'file' })
   const people = h('ul', { className: 'people', ariaLabel: 'Participants' })
-  const banner = h('div', {
-    className: 'banner',
-    role: 'status',
-    textContent: 'The host is not connected. Your edits will reach their file once they are back.',
-    hidden: true,
-  })
+  // The room closes as soon as the host leaves (or was never there).
+  const reconnect = h('button', { type: 'button', textContent: 'Reconnect' })
+  reconnect.addEventListener('click', () => location.reload())
+  const banner = h('div', { className: 'banner', role: 'status', hidden: true }, [
+    h('span', {
+      textContent:
+        'This session has ended: the host is not connected. You can still copy the text.',
+    }),
+    reconnect,
+  ])
   const main = h('main', { className: 'editor' })
   app.replaceChildren(
     h('header', {}, [h('span', { className: 'brand', textContent: 'ima' }), file, status, people]),
@@ -102,13 +107,36 @@ async function joinRoom(id: string, key: string, name: string): Promise<void> {
     main,
   )
 
+  const editable = new Compartment()
+  const readOnly = [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+  const undoManager = new Y.UndoManager(text)
+  const editor = new EditorView({
+    parent: main,
+    extensions: [
+      basicSetup,
+      markdown(),
+      EditorView.lineWrapping,
+      editable.of([]),
+      yCollab(text, awareness, { undoManager }),
+    ],
+  })
+
   const setStatus = (s: RoomStatus) => {
     status.dataset.status = s
     const label = status.lastElementChild as HTMLElement
     label.textContent =
-      s === 'connected' ? 'Connected' : s === 'connecting' ? 'Connecting…' : 'Offline'
+      s === 'connected'
+        ? 'Connected'
+        : s === 'connecting'
+          ? 'Connecting…'
+          : s === 'closed'
+            ? 'Ended'
+            : 'Offline'
+    if (s === 'closed') {
+      banner.hidden = false
+      editor.dispatch({ effects: editable.reconfigure(readOnly) })
+    }
   }
-  setStatus('connecting')
 
   const renderPeople = () => {
     const list = participants(awareness.getStates(), doc.clientID)
@@ -122,9 +150,11 @@ async function joinRoom(id: string, key: string, name: string): Promise<void> {
       }),
     )
     const host = [...awareness.getStates().values()].find((s) => s.role === 'host')
-    banner.hidden = Boolean(host) || client.status !== 'connected'
-    file.textContent = typeof host?.file === 'string' ? host.file : ''
-    document.title = host?.file ? `${host.file} · ima` : 'ima'
+    // Keep showing the file name after the host has gone.
+    if (typeof host?.file === 'string') {
+      file.textContent = host.file
+      document.title = `${host.file} · ima`
+    }
   }
 
   const client = new RoomClient({
@@ -139,16 +169,7 @@ async function joinRoom(id: string, key: string, name: string): Promise<void> {
   })
   awareness.on('change', renderPeople)
 
-  const undoManager = new Y.UndoManager(text)
-  new EditorView({
-    parent: main,
-    extensions: [
-      basicSetup,
-      markdown(),
-      EditorView.lineWrapping,
-      yCollab(text, awareness, { undoManager }),
-    ],
-  })
+  setStatus('connecting')
   client.connect()
   renderPeople()
   window.addEventListener('pagehide', () => void client.destroy())

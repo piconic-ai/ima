@@ -103,6 +103,21 @@ header {
   color: var(--warn-ink);
   font-size: 0.85rem;
 }
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.banner button {
+  font: inherit;
+  padding: 4px 12px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
 .banner[hidden] {
   display: none;
 }

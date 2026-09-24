@@ -12,11 +12,11 @@ async function setup(content: string, { watch = false, writeDelayMs = 20 } = {})
   const dir = await mkdtemp(join(tmpdir(), 'ima-test-'))
   const file = join(dir, 'notes.md')
   await writeFile(file, content)
-  const relay = new Relay()
+  const relay = new Relay({ hosted: true })
   const requests: string[] = []
   const fakeFetch = (async (input: string | URL | Request) => {
     requests.push(String(input))
-    return Response.json({ id: 'AAAAAAAAAAAAAAAAAAAAAA' }, { status: 201 })
+    return Response.json({ id: 'AAAAAAAAAAAAAAAAAAAAAA', hostToken: 'host-token' }, { status: 201 })
   }) as typeof fetch
   const session = await startSession({
     file,
@@ -55,6 +55,8 @@ describe('startSession', () => {
     await vi.waitFor(() => expect(relay.urls).toHaveLength(1))
     expect(relay.urls[0]).toBe('ws://localhost:8787/api/rooms/AAAAAAAAAAAAAAAAAAAAAA/ws')
     for (const u of [...requests, ...relay.urls]) expect(u).not.toContain(key)
+    expect(relay.headers[0]).toEqual({ Authorization: 'Bearer host-token' })
+    expect(JSON.stringify(relay.headers)).not.toContain(key)
     await session.stop()
   })
 
@@ -137,5 +139,14 @@ describe('startSession', () => {
     expect(updates).toHaveLength(1)
     await guest.destroy()
     await session.stop()
+  })
+
+  it('closes the room for guests when it stops', async () => {
+    const { relay, session } = await setup('bye')
+    const guest = await joinAsGuest(relay, session.url)
+    await vi.waitFor(() => expect(guest.doc.getText('content').toString()).toBe('bye'))
+    await session.stop()
+    await vi.waitFor(() => expect(guest.status).toBe('closed'))
+    await guest.destroy()
   })
 })

@@ -1,19 +1,50 @@
+import { ROOM_CLOSED } from './close.ts'
 import type { SocketLike } from './room.ts'
+
+export interface RelayOptions {
+  /**
+   * Behave like the real Room: a socket that sent an Authorization header is the
+   * host, guests are turned away while no host is connected, and everyone is
+   * disconnected with ROOM_CLOSED when the last host leaves.
+   */
+  hosted?: boolean
+}
 
 /** An in-memory stand-in for the Worker: relays every frame to all other sockets. */
 export class Relay {
   sockets = new Set<FakeSocket>()
   frames: Uint8Array[] = []
   urls: string[] = []
-  create = (url: string): SocketLike => {
+  headers: (Record<string, string> | undefined)[] = []
+
+  constructor(readonly opts: RelayOptions = {}) {}
+
+  create = (url: string, headers?: Record<string, string>): SocketLike => {
     this.urls.push(url)
-    const socket = new FakeSocket(this)
+    this.headers.push(headers)
+    const socket = new FakeSocket(this, Boolean(headers?.Authorization))
     this.sockets.add(socket)
     queueMicrotask(() => {
+      if (this.opts.hosted && !socket.isHost && !this.hasHost()) {
+        socket.close(ROOM_CLOSED)
+        return
+      }
       socket.readyState = 1
       socket.onopen?.({})
     })
     return socket
+  }
+
+  hasHost(except?: FakeSocket): boolean {
+    return [...this.sockets].some((s) => s.isHost && s !== except && s.readyState !== 3)
+  }
+
+  /** Called by a socket as it closes. */
+  left(socket: FakeSocket): void {
+    this.sockets.delete(socket)
+    if (this.opts.hosted && socket.isHost && !this.hasHost()) {
+      for (const peer of this.sockets) peer.close(ROOM_CLOSED)
+    }
   }
 }
 
@@ -24,7 +55,10 @@ export class FakeSocket implements SocketLike {
   onmessage: SocketLike['onmessage'] = null
   onclose: SocketLike['onclose'] = null
   onerror: SocketLike['onerror'] = null
-  constructor(private relay: Relay) {}
+  constructor(
+    private relay: Relay,
+    readonly isHost: boolean,
+  ) {}
   send(data: Uint8Array) {
     this.relay.frames.push(data)
     for (const peer of this.relay.sockets) {
@@ -34,10 +68,10 @@ export class FakeSocket implements SocketLike {
       }
     }
   }
-  close() {
+  close(code?: number) {
     if (this.readyState === 3) return
     this.readyState = 3
-    this.relay.sockets.delete(this)
-    queueMicrotask(() => this.onclose?.({}))
+    this.relay.left(this)
+    queueMicrotask(() => this.onclose?.({ code }))
   }
 }

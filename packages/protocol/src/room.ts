@@ -4,9 +4,11 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import * as syncProtocol from 'y-protocols/sync'
 import type * as Y from 'yjs'
 import { decrypt, encrypt } from './cipher.ts'
+import { ROOM_CLOSED } from './close.ts'
 import { decodeMessage, encodeMessage, MessageType } from './message.ts'
 
-export type RoomStatus = 'connecting' | 'connected' | 'disconnected'
+/** `closed` is final: the host ended the session. */
+export type RoomStatus = 'connecting' | 'connected' | 'disconnected' | 'closed'
 
 /** The subset of the WebSocket API used by RoomClient (browser and Node.js 22+ globals both fit). */
 export interface SocketLike {
@@ -14,7 +16,7 @@ export interface SocketLike {
   readonly readyState: number
   onopen: ((ev: unknown) => void) | null
   onmessage: ((ev: { data: unknown }) => void) | null
-  onclose: ((ev: unknown) => void) | null
+  onclose: ((ev: { code?: number }) => void) | null
   onerror: ((ev: unknown) => void) | null
   send(data: Uint8Array): void
   close(code?: number, reason?: string): void
@@ -26,7 +28,9 @@ export interface RoomClientOptions {
   key: CryptoKey
   doc: Y.Doc
   awareness: awarenessProtocol.Awareness
-  createSocket?: (url: string) => SocketLike
+  /** Extra handshake headers (Node.js only; browsers cannot set them). */
+  headers?: Record<string, string>
+  createSocket?: (url: string, headers?: Record<string, string>) => SocketLike
   minBackoffMs?: number
   maxBackoffMs?: number
   onStatus?: (status: RoomStatus) => void
@@ -68,9 +72,8 @@ export class RoomClient {
   connect(): void {
     if (this.destroyed || this.socket) return
     this.setStatus('connecting')
-    const createSocket =
-      this.opts.createSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike)
-    const socket = createSocket(this.opts.url)
+    const createSocket = this.opts.createSocket ?? defaultCreateSocket
+    const socket = createSocket(this.opts.url, this.opts.headers)
     socket.binaryType = 'arraybuffer'
     this.socket = socket
 
@@ -90,10 +93,14 @@ export class RoomClient {
         .then(() => this.receive(data))
         .catch((error) => this.opts.onError?.(error))
     }
-    socket.onclose = () => {
+    socket.onclose = (ev) => {
       if (this.socket !== socket) return
       this.socket = null
       this.dropRemoteAwareness()
+      if (ev.code === ROOM_CLOSED && !this.destroyed) {
+        this.setStatus('closed')
+        return
+      }
       this.setStatus('disconnected')
       this.scheduleReconnect()
     }
@@ -211,6 +218,13 @@ interface AwarenessChanges {
   added: number[]
   updated: number[]
   removed: number[]
+}
+
+// Node.js (undici) accepts `{ headers }` as the second argument; browsers take
+// subprotocols there, so only pass it when headers are given.
+function defaultCreateSocket(url: string, headers?: Record<string, string>): SocketLike {
+  const WS = WebSocket as unknown as new (url: string, init?: unknown) => SocketLike
+  return headers ? new WS(url, { headers }) : new WS(url)
 }
 
 function toBytes(data: unknown): Uint8Array | null {

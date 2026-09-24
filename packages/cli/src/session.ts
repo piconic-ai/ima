@@ -42,7 +42,7 @@ export async function startSession(opts: SessionOptions): Promise<Session> {
 
   const res = await doFetch(`${server}/api/rooms`, { method: 'POST' })
   if (!res.ok) throw new Error(`failed to create a room: ${res.status} ${res.statusText}`)
-  const { id } = (await res.json()) as { id: string }
+  const { id, hostToken } = (await res.json()) as { id: string; hostToken: string }
 
   const key = generateKey()
   const url = `${server}/r/${id}#${key}`
@@ -91,6 +91,8 @@ export async function startSession(opts: SessionOptions): Promise<Session> {
     key: await importKey(key),
     doc,
     awareness,
+    // Marks us as the host: the room closes for everyone once we leave.
+    headers: { Authorization: `Bearer ${hostToken}` },
     createSocket: opts.createSocket,
     onStatus: opts.onStatus,
     onError: opts.onError,
