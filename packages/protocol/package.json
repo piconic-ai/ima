@@ -13,6 +13,7 @@
     "yjs": "^13.6.33"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
   }
 }

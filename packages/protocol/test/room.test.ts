@@ -1,47 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
-import { generateKey, importKey, RoomClient, type SocketLike } from '../src/index.ts'
-
-/** An in-memory stand-in for the Worker: relays every frame to all other sockets. */
-class Relay {
-  sockets = new Set<FakeSocket>()
-  frames: Uint8Array[] = []
-  create = (_url: string): SocketLike => {
-    const socket = new FakeSocket(this)
-    this.sockets.add(socket)
-    queueMicrotask(() => {
-      socket.readyState = 1
-      socket.onopen?.({})
-    })
-    return socket
-  }
-}
-
-class FakeSocket implements SocketLike {
-  binaryType = 'blob'
-  readyState = 0
-  onopen: SocketLike['onopen'] = null
-  onmessage: SocketLike['onmessage'] = null
-  onclose: SocketLike['onclose'] = null
-  onerror: SocketLike['onerror'] = null
-  constructor(private relay: Relay) {}
-  send(data: Uint8Array) {
-    this.relay.frames.push(data)
-    for (const peer of this.relay.sockets) {
-      if (peer !== this && peer.readyState === 1) {
-        const copy = data.slice().buffer
-        queueMicrotask(() => peer.onmessage?.({ data: copy }))
-      }
-    }
-  }
-  close() {
-    if (this.readyState === 3) return
-    this.readyState = 3
-    this.relay.sockets.delete(this)
-    queueMicrotask(() => this.onclose?.({}))
-  }
-}
+import { generateKey, importKey, RoomClient } from '../src/index.ts'
+import { Relay } from '../src/testing.ts'
 
 const clients: RoomClient[] = []
 afterEach(async () => {
