@@ -1,4 +1,4 @@
-import { chmod, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmod, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 
 /** Writes the file atomically: a temp file in the same directory, then rename over. */
@@ -20,7 +20,9 @@ export async function writeFileAtomic(path: string, content: string): Promise<vo
 
 /**
  * Debounces writes of the latest content to `path`. Skips writes when the
- * content equals what is already on disk (as far as we know).
+ * content equals what is already on disk (as far as we know), and refuses to
+ * clobber a file that someone else changed since our last write: it calls
+ * `onExternalChange` instead, so the change can be merged first.
  */
 export class FileWriter {
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -33,6 +35,7 @@ export class FileWriter {
     initial: string,
     private readonly delayMs = 1000,
     private readonly onError: (error: unknown) => void = () => {},
+    private readonly onExternalChange: () => void = () => {},
   ) {
     this.lastWritten = initial
   }
@@ -58,6 +61,11 @@ export class FileWriter {
       this.writing = this.writing.then(async () => {
         if (content === this.lastWritten) return
         try {
+          const onDisk = await readFile(this.path, 'utf8').catch(() => null)
+          if (onDisk !== null && onDisk !== this.lastWritten) {
+            this.onExternalChange()
+            return
+          }
           await writeFileAtomic(this.path, content)
           this.lastWritten = content
         } catch (error) {

@@ -8,7 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { startSession } from '../src/session.ts'
 
-async function setup(content: string) {
+async function setup(content: string, { watch = false, writeDelayMs = 20 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'ima-test-'))
   const file = join(dir, 'notes.md')
   await writeFile(file, content)
@@ -21,7 +21,8 @@ async function setup(content: string) {
   const session = await startSession({
     file,
     server: 'http://localhost:8787/',
-    writeDelayMs: 20,
+    writeDelayMs,
+    watch,
     fetch: fakeFetch,
     createSocket: relay.create,
   })
@@ -89,6 +90,51 @@ describe('startSession', () => {
       const states = [...guest.awareness.getStates().values()]
       expect(states.some((s) => s.role === 'host')).toBe(true)
     })
+    await guest.destroy()
+    await session.stop()
+  })
+
+  it('streams edits made to the file outside ima to guests', async () => {
+    const { file, relay, session } = await setup('# notes\n', { watch: true })
+    const guest = await joinAsGuest(relay, session.url)
+    const text = guest.doc.getText('content')
+    await vi.waitFor(() => expect(text.toString()).toBe('# notes\n'))
+    await writeFile(file, '# notes\n- edited in vim\n')
+    await vi.waitFor(() => expect(text.toString()).toBe('# notes\n- edited in vim\n'))
+    await guest.destroy()
+    await session.stop()
+  })
+
+  it('merges an external edit with a concurrent remote edit', async () => {
+    const { file, relay, session } = await setup('one\ntwo\n', { watch: true, writeDelayMs: 1000 })
+    const guest = await joinAsGuest(relay, session.url)
+    const text = guest.doc.getText('content')
+    await vi.waitFor(() => expect(text.toString()).toBe('one\ntwo\n'))
+    // The guest edits, and before it is written back the host edits the file.
+    text.insert(0, 'zero\n')
+    await vi.waitFor(() => expect(session.doc.getText('content').toString()).toContain('zero'))
+    await writeFile(file, 'one\ntwo\nthree\n')
+    const merged = 'zero\none\ntwo\nthree\n'
+    await vi.waitFor(() => expect(text.toString()).toBe(merged))
+    await vi.waitFor(async () => expect(await readFile(file, 'utf8')).toBe(merged), {
+      timeout: 3000,
+    })
+    await guest.destroy()
+    await session.stop()
+    expect(await readFile(file, 'utf8')).toBe(merged)
+  })
+
+  it('does not loop between writing back and watching', async () => {
+    const { relay, session } = await setup('a', { watch: true })
+    const guest = await joinAsGuest(relay, session.url)
+    const text = guest.doc.getText('content')
+    await vi.waitFor(() => expect(text.toString()).toBe('a'))
+    const updates: unknown[] = []
+    session.doc.on('update', (_u: Uint8Array, origin: unknown) => updates.push(origin))
+    text.insert(1, 'b')
+    await vi.waitFor(() => expect(session.writer.lastWritten).toBe('ab'))
+    await new Promise((r) => setTimeout(r, 300))
+    expect(updates).toHaveLength(1)
     await guest.destroy()
     await session.stop()
   })

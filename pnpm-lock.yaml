@@ -29,6 +29,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      fast-diff:
+        specifier: ^1.3.0
+        version: 1.3.0
       y-protocols:
         specifier: ^1.0.7
         version: 1.0.7(yjs@13.6.33)
@@ -1119,6 +1122,9 @@ packages:
   expect-type@1.4.0:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
+
+  fast-diff@1.3.0:
+    resolution: {integrity: sha512-VxPP4NqbUjj6MaAOafWeUn2cXWLcCtljklUtZf0Ind4XQ+QPtmA0b18zZy0jIQx+ExRVCR/ZQpBmik5lXshNsw==}
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
@@ -2308,6 +2314,8 @@ snapshots:
       '@types/estree': 1.0.9
 
   expect-type@1.4.0: {}
+
+  fast-diff@1.3.0: {}
 
   fdir@6.5.0(picomatch@4.0.7):
     optionalDependencies:
