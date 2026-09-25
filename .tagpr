@@ -1,5 +1,6 @@
 [tagpr]
 	vPrefix = true
 	releaseBranch = main
-	versionFile = packages/cli/package.json
+	# The CLI version comes from the tag (go install / -ldflags); no file to bump.
+	versionFile = -
 	changelog = true

@@ -48,8 +48,12 @@ function showLanding(): void {
   showCard('ima', [
     h('p', {}, [
       'Co-edit a local Markdown file, right now. Run ',
-      h('code', { textContent: 'npx @piconic/ima notes.md' }),
-      ' and share the link it prints.',
+      h('code', { textContent: 'ima notes.md' }),
+      ' and share the link it prints. ',
+      h('a', {
+        href: 'https://github.com/piconic-ai/ima#install',
+        textContent: 'How to install',
+      }),
     ]),
     h('p', { textContent: '居間 (living room) + 今 (now).' }),
   ])

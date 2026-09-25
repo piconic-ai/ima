@@ -1,0 +1,430 @@
+package session
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/piconic-ai/ima/internal/protocol"
+	"github.com/piconic-ai/ima/internal/protocol/prototest"
+	"github.com/reearth/ygo/awareness"
+	"github.com/reearth/ygo/crdt"
+)
+
+const wait = 3 * time.Second
+
+type fixture struct {
+	file     string
+	relay    *prototest.Relay
+	server   *httptest.Server
+	requests []string
+	session  *Session
+}
+
+type setupOpts struct {
+	watch      bool
+	writeDelay time.Duration
+	// wrap wraps the host's connections.
+	wrap func(protocol.Conn) protocol.Conn
+}
+
+func setup(t *testing.T, content string, o setupOpts) *fixture {
+	t.Helper()
+	f := &fixture{relay: prototest.NewRelay(true)}
+	f.file = filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(f.file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		f.requests = append(f.requests, r.Method+" "+r.URL.String())
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "AAAAAAAAAAAAAAAAAAAAAA", "hostToken": "host-token"})
+	}))
+	t.Cleanup(f.server.Close)
+	if o.writeDelay == 0 {
+		o.writeDelay = 20 * time.Millisecond
+	}
+	s, err := Start(context.Background(), Options{
+		File:       f.file,
+		Server:     f.server.URL + "/",
+		WriteDelay: o.writeDelay,
+		Watch:      o.watch,
+		Dial: func(ctx context.Context, url string, header http.Header) (protocol.Conn, error) {
+			c, err := f.relay.Dial(ctx, url, header)
+			if err == nil && o.wrap != nil {
+				c = o.wrap(c)
+			}
+			return c, err
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+	f.session = s
+	// Guests are turned away until the host is in the room.
+	prototest.WaitFor(t, wait, func() bool { return s.Client.Status() == protocol.StatusConnected }, "host connected")
+	return f
+}
+
+type guest struct {
+	*protocol.Client
+	doc  *crdt.Doc
+	text *crdt.YText
+	aw   *awareness.Awareness
+}
+
+func (g *guest) String() string { return g.text.ToString() }
+
+func (g *guest) insert(index int, s string) {
+	g.doc.Transact(func(txn *crdt.Transaction) { g.text.Insert(txn, index, s, nil) })
+}
+
+func joinAsGuest(t *testing.T, relay *prototest.Relay, shareURL string) *guest {
+	t.Helper()
+	u, err := url.Parse(shareURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := protocol.DecodeKey(u.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := crdt.New()
+	aw := awareness.New(uint64(doc.ClientID()))
+	aw.SetLocalState(map[string]any{}) // like a JavaScript Awareness starts
+	c, err := protocol.NewClient(protocol.ClientOptions{
+		URL: "ws://guest", Key: key, Doc: doc, Awareness: aw, Dial: relay.Dial,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Destroy)
+	c.Connect()
+	return &guest{Client: c, doc: doc, text: doc.GetText("content"), aw: aw}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestShareURLKeyNeverReachesServer(t *testing.T) {
+	f := setup(t, "# hi", setupOpts{})
+	u, _ := url.Parse(f.session.URL)
+	if origin := u.Scheme + "://" + u.Host; origin != f.server.URL {
+		t.Fatalf("origin = %q", origin)
+	}
+	if u.Path != "/r/AAAAAAAAAAAAAAAAAAAAAA" {
+		t.Fatalf("path = %q", u.Path)
+	}
+	key := u.Fragment
+	if len(key) != 43 {
+		t.Fatalf("key = %q", key)
+	}
+	if len(f.requests) != 1 || f.requests[0] != "POST /api/rooms" {
+		t.Fatalf("requests = %v", f.requests)
+	}
+	prototest.WaitFor(t, wait, func() bool { return len(f.relay.URLs()) == 1 }, "dial")
+	wsURL := "ws" + strings.TrimPrefix(f.server.URL, "http") + "/api/rooms/AAAAAAAAAAAAAAAAAAAAAA/ws"
+	if got := f.relay.URLs()[0]; got != wsURL {
+		t.Fatalf("ws url = %q", got)
+	}
+	header := f.relay.Headers()[0]
+	if got := header.Get("Authorization"); got != "Bearer host-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	for _, s := range append(append(f.requests, f.relay.URLs()...), header.Get("Authorization")) {
+		if strings.Contains(s, key) {
+			t.Fatalf("key leaked in %q", s)
+		}
+	}
+}
+
+func TestFailsWhenRoomCannotBeCreated(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "notes.md")
+	_ = os.WriteFile(file, []byte("x"), 0o644)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	_, err := Start(context.Background(), Options{File: file, Server: server.URL})
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestServesFileAndWritesBackGuestEdits(t *testing.T) {
+	f := setup(t, "# notes\n", setupOpts{})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "# notes\n" }, "guest to sync")
+	g.insert(len("# notes\n"), "- from guest\n")
+	prototest.WaitFor(t, wait, func() bool { return readFile(t, f.file) == "# notes\n- from guest\n" }, "write back")
+}
+
+func TestWritesFinalStateOnStop(t *testing.T) {
+	f := setup(t, "a", setupOpts{writeDelay: time.Minute})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
+	g.insert(1, "b")
+	prototest.WaitFor(t, wait, func() bool { return f.session.Text.ToString() == "ab" }, "host to see the edit")
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != "ab" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestAnnouncesItselfAsHost(t *testing.T) {
+	f := setup(t, "", setupOpts{})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool {
+		for _, s := range g.aw.GetStates() {
+			if s.State["role"] == "host" && s.State["file"] == "notes.md" {
+				return true
+			}
+		}
+		return false
+	}, "host awareness")
+}
+
+func TestStreamsExternalEditsToGuests(t *testing.T) {
+	f := setup(t, "# notes\n", setupOpts{watch: true})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "# notes\n" }, "guest to sync")
+	if err := os.WriteFile(f.file, []byte("# notes\n- edited in vim\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "# notes\n- edited in vim\n" }, "external edit")
+}
+
+func TestMergesExternalEditWithConcurrentRemoteEdit(t *testing.T) {
+	f := setup(t, "one\ntwo\n", setupOpts{watch: true, writeDelay: time.Second})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "one\ntwo\n" }, "guest to sync")
+	// The guest edits, and before it is written back the host edits the file.
+	g.insert(0, "zero\n")
+	prototest.WaitFor(t, wait, func() bool { return strings.Contains(f.session.Text.ToString(), "zero") }, "host to see the edit")
+	if err := os.WriteFile(f.file, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const merged = "zero\none\ntwo\nthree\n"
+	prototest.WaitFor(t, wait, func() bool { return g.String() == merged }, "merged doc")
+	prototest.WaitFor(t, wait, func() bool { return readFile(t, f.file) == merged }, "merged file")
+	g.Destroy()
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != merged {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestNoLoopBetweenWriteBackAndWatch(t *testing.T) {
+	f := setup(t, "a", setupOpts{watch: true})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
+	var mu sync.Mutex
+	var origins []any
+	f.session.Doc.OnUpdate(func(_ []byte, origin any) { mu.Lock(); origins = append(origins, origin); mu.Unlock() })
+	g.insert(1, "b")
+	prototest.WaitFor(t, wait, func() bool { return f.session.Writer.LastWritten() == "ab" }, "write back")
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(origins) != 1 {
+		t.Fatalf("updates = %v", origins)
+	}
+}
+
+func TestClosesRoomForGuestsOnStop(t *testing.T) {
+	f := setup(t, "bye", setupOpts{})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "bye" }, "guest to sync")
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	prototest.WaitFor(t, wait, func() bool { return g.Status() == protocol.StatusClosed }, "guest closed")
+}
+
+func TestStopReportsFailedFinalWrite(t *testing.T) {
+	f := setup(t, "a", setupOpts{writeDelay: time.Minute})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
+	g.insert(1, "b")
+	prototest.WaitFor(t, wait, func() bool { return f.session.Text.ToString() == "ab" }, "host to see the edit")
+	// The atomic write needs a temp file next to the target.
+	dir := filepath.Dir(f.file)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := f.session.Stop(); err == nil {
+		t.Fatal("Stop should report the failed write")
+	}
+}
+
+func TestSettle(t *testing.T) {
+	t.Run("returns once two reads agree", func(t *testing.T) {
+		reads := []string{"half", "full", "full"}
+		got, ok := settle(func() (string, bool) {
+			r := reads[0]
+			reads = reads[1:]
+			return r, true
+		}, 0, 10)
+		if !ok || got != "full" {
+			t.Fatalf("settle = %q, %v", got, ok)
+		}
+	})
+	t.Run("gives up on content that keeps changing", func(t *testing.T) {
+		n := 0
+		got, ok := settle(func() (string, bool) {
+			n++
+			return fmt.Sprint(n), true
+		}, 0, 10)
+		if ok || n != 10 {
+			t.Fatalf("settle = %q, %v after %d reads", got, ok, n)
+		}
+	})
+}
+
+func TestStopRetriesWhenFileChangesWhileSaving(t *testing.T) {
+	f := setup(t, "one\n", setupOpts{writeDelay: time.Minute})
+	attempts := 0
+	f.session.beforeFinalWrite = func(attempt int) {
+		attempts = attempt
+		if attempt == 1 {
+			// An edit that arrived while leaving, and someone saving the file.
+			f.session.Doc.Transact(func(txn *crdt.Transaction) { f.session.Text.Insert(txn, 0, "zero\n", nil) })
+			if err := os.WriteFile(f.file, []byte("one\ntwo\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != "zero\none\ntwo\n" || attempts != 2 {
+		t.Fatalf("content = %q after %d attempts", got, attempts)
+	}
+}
+
+// blockingConn runs hook before its first write once armed.
+type blockingConn struct {
+	protocol.Conn
+	armed atomic.Bool
+	hook  func()
+}
+
+func (c *blockingConn) Write(ctx context.Context, data []byte) error {
+	if c.armed.CompareAndSwap(true, false) {
+		c.hook()
+	}
+	return c.Conn.Write(ctx, data)
+}
+
+func TestStopSavesEditsArrivingWhileLeaving(t *testing.T) {
+	var conn *blockingConn
+	f := setup(t, "a", setupOpts{writeDelay: time.Minute, wrap: func(c protocol.Conn) protocol.Conn {
+		conn = &blockingConn{Conn: c}
+		return conn
+	}})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
+	// Destroy sends our departure; hold it until a guest edit has come in. The
+	// hook runs on the outbox goroutine, so it must not fail the test itself.
+	arrived := false
+	conn.hook = func() {
+		g.insert(1, " late")
+		deadline := time.Now().Add(wait)
+		for !arrived && time.Now().Before(deadline) {
+			arrived = f.session.Text.ToString() == "a late"
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	f.session.beforeDestroy = func() { conn.armed.Store(true) }
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if !arrived {
+		t.Fatal("the late edit never reached the host")
+	}
+	if got := readFile(t, f.file); got != "a late" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestSyncsFromDiskDoNotOverlapOrOutliveStop(t *testing.T) {
+	f := setup(t, "one\n", setupOpts{})
+	s := f.session
+	// Stand in for a sync in flight. Registered after setup, so it runs before
+	// cleanup's Stop even when an assertion fails with the lock held.
+	unlock := holdLock(t, &s.syncing)
+	if err := os.WriteFile(f.file, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.scheduleSyncFromDisk()
+	time.Sleep(200 * time.Millisecond) // the timer fires
+	if got := s.Text.ToString(); got != "one\n" {
+		t.Fatalf("a sync ran while another was in flight: %q", got)
+	}
+	// Stop begins while the timer's sync waits; that sync must then do nothing.
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+	unlock()
+	time.Sleep(200 * time.Millisecond)
+	if got := s.Text.ToString(); got != "one\n" {
+		t.Fatalf("a sync ran after Stop began: %q", got)
+	}
+}
+
+func TestStopWaitsForSyncInFlight(t *testing.T) {
+	f := setup(t, "one\n", setupOpts{})
+	s := f.session
+	unlock := holdLock(t, &s.syncing)
+	if err := os.WriteFile(f.file, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Stop() }()
+	select {
+	case <-done:
+		t.Fatal("Stop returned while a sync was in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != "one\ntwo\n" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+// holdLock locks mu and returns an idempotent unlock, which also runs on cleanup.
+func holdLock(t *testing.T, mu *sync.Mutex) func() {
+	mu.Lock()
+	var once sync.Once
+	unlock := func() { once.Do(mu.Unlock) }
+	t.Cleanup(unlock)
+	return unlock
+}

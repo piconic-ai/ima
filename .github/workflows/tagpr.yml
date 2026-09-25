@@ -1,8 +1,8 @@
 name: tagpr
 
-# Every push to main makes tagpr open (or update) a release PR that bumps the
-# version in packages/cli/package.json and updates CHANGELOG.md. Merging that PR
-# creates the tag.
+# Every push to main makes tagpr open (or update) a release PR that updates
+# CHANGELOG.md. There is no version file to bump (.tagpr: versionFile = -): the
+# CLI takes its version from the tag. Merging that PR creates the tag.
 #
 # Deploys are done by Cloudflare Workers Builds (Cloudflare's Git integration,
 # Production branch = release). Workers Builds only has push triggers and cannot

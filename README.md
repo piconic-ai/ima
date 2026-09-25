@@ -3,7 +3,7 @@
 Co-edit a local Markdown file with others, right now.
 
 ```sh
-npx @piconic/ima notes.md
+ima notes.md
 ```
 
 `ima` prints a link (and copies it to your clipboard). Paste it into Slack or wherever; whoever opens it edits the file with you in their browser. No install or account for them. Edits land in your local file about a second later. Press Ctrl+C to finish: the final state is written and the room closes.
@@ -23,35 +23,45 @@ notes.md  <->  ima CLI  <--wss-->  Worker -> Room (Durable Object)  <--wss-->  b
 - Anyone with the link can edit. Share it like you would share a Google Docs link.
 - A room lives only while you are connected. When you press Ctrl+C (or lose your connection), everyone is disconnected and nothing is left on the server.
 
-## Requirements
+## Install
 
-Node.js 22 or later.
+`ima` is a single binary with no runtime dependencies. With Go 1.25 or later:
+
+```sh
+go install github.com/piconic-ai/ima/cmd/ima@latest
+```
 
 Set `IMA_SERVER` to use a server other than `https://ima.piconic.ai`.
 
 ## Development
 
+The CLI is written in Go; the server and the browser editor in TypeScript.
+
 ```sh
 pnpm install
-pnpm test        # all packages
+pnpm test        # TypeScript packages
 pnpm typecheck
 pnpm lint
+go test ./...    # the CLI; its interop test drives the web client's RoomClient with Node.js
+go vet ./...
 ```
 
 Run everything locally:
 
 ```sh
 pnpm --filter @ima/worker dev                  # builds the web editor, serves on http://localhost:8787
-pnpm --filter @piconic/ima build
-IMA_SERVER=http://localhost:8787 node packages/cli/dist/ima.js notes.md
+IMA_SERVER=http://localhost:8787 go run ./cmd/ima notes.md
 ```
 
-| Package | What it is |
+| Path | What it is |
 | --- | --- |
-| `packages/protocol` | Encryption, message framing and the Yjs room client shared by CLI and web |
+| `cmd/ima`, `internal/` | The `ima` command (Go). `internal/protocol` mirrors `packages/protocol` on top of [ygo](https://github.com/reearth/ygo) |
+| `packages/protocol` | Encryption, message framing and the Yjs room client used by the web editor |
 | `packages/worker` | Hono Worker + `Room` Durable Object (WebSocket Hibernation API); also serves the web editor |
-| `packages/cli` | The `ima` command, published as `@piconic/ima` |
 | `packages/web` | CodeMirror 6 editor for collaborators |
+
+The wire format (AES-GCM frames, message types, y-protocols sync and awareness)
+is shared by both implementations: change them together.
 
 ## Releases and deploys
 
@@ -68,7 +78,7 @@ block in `packages/worker/wrangler.jsonc`.
 To try a Preview with the CLI:
 
 ```sh
-IMA_SERVER=https://<branch-name>-ima.<subdomain>.workers.dev npx @piconic/ima notes.md
+IMA_SERVER=https://<branch-name>-ima.<subdomain>.workers.dev go run ./cmd/ima notes.md
 ```
 
 Workers Builds settings (Cloudflare dashboard → ima Worker → Settings → Build):
@@ -86,12 +96,3 @@ Workers Builds settings (Cloudflare dashboard → ima Worker → Settings → Bu
 The Worker runs on the Workers Free plan (100,000 requests a day). It uses a
 SQLite-backed Durable Object and no D1 or KV. `piconic.ai` must be on the same
 Cloudflare account for the custom domain.
-
-## Publishing the CLI
-
-The CLI shares the release version: tagpr bumps `version` in
-`packages/cli/package.json`.
-
-1. After the release PR is merged, check out the tag.
-2. `cd packages/cli && npm publish` (`prepublishOnly` typechecks, tests and bundles into `dist/ima.js`; the package has no runtime dependencies).
-3. On another machine, check that `npx @piconic/ima notes.md` works.

@@ -5,5 +5,3 @@ dist/
 *.log
 .DS_Store
 .playwright-mcp/
-packages/cli/README.md
-packages/cli/LICENSE
