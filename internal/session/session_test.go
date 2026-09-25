@@ -158,16 +158,32 @@ func TestShareURLKeyNeverReachesServer(t *testing.T) {
 	}
 }
 
-func TestFailsWhenRoomCannotBeCreated(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "notes.md")
-	_ = os.WriteFile(file, []byte("x"), 0o644)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-	_, err := Start(context.Background(), Options{File: file, Server: server.URL})
-	if err == nil || !strings.Contains(err.Error(), "503") {
-		t.Fatalf("err = %v", err)
+func TestExplainsWhyRoomCannotBeCreated(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"server error", http.StatusServiceUnavailable, "nope", "503 Service Unavailable"},
+		{"not JSON", http.StatusOK, "<html>", "did not answer like an ima server (check IMA_SERVER)"},
+		{"no room id", http.StatusCreated, `{"hostToken":"t"}`, "did not answer like an ima server"},
+		{"no host token", http.StatusCreated, `{"id":"AAAAAAAAAAAAAAAAAAAAAA"}`, "did not return a host token; the server is older than this ima"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "notes.md")
+			_ = os.WriteFile(file, []byte("x"), 0o644)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			_, err := Start(context.Background(), Options{File: file, Server: server.URL})
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), server.URL) {
+				t.Fatalf("err = %v", err)
+			}
+		})
 	}
 }
 

@@ -184,11 +184,15 @@ func createRoom(ctx context.Context, client *http.Client, server string) (*room,
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return nil, fmt.Errorf("failed to create a room: %s", res.Status)
+		return nil, fmt.Errorf("failed to create a room on %s: %s", server, res.Status)
 	}
 	var r room
-	if err := json.NewDecoder(res.Body).Decode(&r); err != nil || r.ID == "" || r.HostToken == "" {
-		return nil, fmt.Errorf("failed to create a room: unexpected response")
+	if err := json.NewDecoder(res.Body).Decode(&r); err != nil || r.ID == "" {
+		return nil, fmt.Errorf("failed to create a room: %s did not answer like an ima server (check IMA_SERVER)", server)
+	}
+	if r.HostToken == "" {
+		// Servers before host tokens cannot close a room when its host leaves.
+		return nil, fmt.Errorf("failed to create a room: %s did not return a host token; the server is older than this ima and needs an update", server)
 	}
 	return &r, nil
 }
