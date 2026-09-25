@@ -349,16 +349,82 @@ func TestStopSavesEditsArrivingWhileLeaving(t *testing.T) {
 	}})
 	g := joinAsGuest(t, f.relay, f.session.URL)
 	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
-	// Destroy sends our departure; hold it until a guest edit has come in.
+	// Destroy sends our departure; hold it until a guest edit has come in. The
+	// hook runs on the outbox goroutine, so it must not fail the test itself.
+	arrived := false
 	conn.hook = func() {
 		g.insert(1, " late")
-		prototest.WaitFor(t, wait, func() bool { return f.session.Text.ToString() == "a late" }, "late edit")
+		deadline := time.Now().Add(wait)
+		for !arrived && time.Now().Before(deadline) {
+			arrived = f.session.Text.ToString() == "a late"
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	f.session.beforeDestroy = func() { conn.armed.Store(true) }
 	if err := f.session.Stop(); err != nil {
 		t.Fatal(err)
 	}
+	if !arrived {
+		t.Fatal("the late edit never reached the host")
+	}
 	if got := readFile(t, f.file); got != "a late" {
 		t.Fatalf("content = %q", got)
 	}
+}
+
+func TestSyncsFromDiskDoNotOverlapOrOutliveStop(t *testing.T) {
+	f := setup(t, "one\n", setupOpts{})
+	s := f.session
+	// Stand in for a sync in flight. Registered after setup, so it runs before
+	// cleanup's Stop even when an assertion fails with the lock held.
+	unlock := holdLock(t, &s.syncing)
+	if err := os.WriteFile(f.file, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.scheduleSyncFromDisk()
+	time.Sleep(200 * time.Millisecond) // the timer fires
+	if got := s.Text.ToString(); got != "one\n" {
+		t.Fatalf("a sync ran while another was in flight: %q", got)
+	}
+	// Stop begins while the timer's sync waits; that sync must then do nothing.
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+	unlock()
+	time.Sleep(200 * time.Millisecond)
+	if got := s.Text.ToString(); got != "one\n" {
+		t.Fatalf("a sync ran after Stop began: %q", got)
+	}
+}
+
+func TestStopWaitsForSyncInFlight(t *testing.T) {
+	f := setup(t, "one\n", setupOpts{})
+	s := f.session
+	unlock := holdLock(t, &s.syncing)
+	if err := os.WriteFile(f.file, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Stop() }()
+	select {
+	case <-done:
+		t.Fatal("Stop returned while a sync was in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != "one\ntwo\n" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+// holdLock locks mu and returns an idempotent unlock, which also runs on cleanup.
+func holdLock(t *testing.T, mu *sync.Mutex) func() {
+	mu.Lock()
+	var once sync.Once
+	unlock := func() { once.Do(mu.Unlock) }
+	t.Cleanup(unlock)
+	return unlock
 }

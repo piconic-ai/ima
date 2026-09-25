@@ -273,15 +273,8 @@ func (s *Session) scheduleSyncFromDisk() {
 	})
 }
 
-// SyncFromDisk merges the file's current content into the doc if it changed
-// outside ima, against what we last wrote.
-func (s *Session) SyncFromDisk() {
-	s.syncing.Lock()
-	defer s.syncing.Unlock()
-	s.syncFromDisk()
-}
-
-// syncFromDisk is SyncFromDisk with s.syncing held.
+// syncFromDisk merges the file's current content into the doc if it changed
+// outside ima, against what we last wrote. The caller must hold s.syncing.
 func (s *Session) syncFromDisk() {
 	changed := false
 	// Rebase drops any pending write, which predates the merge.
