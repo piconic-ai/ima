@@ -3,18 +3,18 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/piconic-ai/ima/internal/filewriter"
 	"github.com/piconic-ai/ima/internal/protocol"
 	"github.com/piconic-ai/ima/internal/protocol/prototest"
 	"github.com/reearth/ygo/awareness"
@@ -34,6 +34,8 @@ type fixture struct {
 type setupOpts struct {
 	watch      bool
 	writeDelay time.Duration
+	// wrap wraps the host's connections.
+	wrap func(protocol.Conn) protocol.Conn
 }
 
 func setup(t *testing.T, content string, o setupOpts) *fixture {
@@ -60,7 +62,13 @@ func setup(t *testing.T, content string, o setupOpts) *fixture {
 		Server:     f.server.URL + "/",
 		WriteDelay: o.writeDelay,
 		Watch:      o.watch,
-		Dial:       f.relay.Dial,
+		Dial: func(ctx context.Context, url string, header http.Header) (protocol.Conn, error) {
+			c, err := f.relay.Dial(ctx, url, header)
+			if err == nil && o.wrap != nil {
+				c = o.wrap(c)
+			}
+			return c, err
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -274,22 +282,83 @@ func TestStopReportsFailedFinalWrite(t *testing.T) {
 	}
 }
 
-func TestReadSettledGivesUpOnAFileThatKeepsChanging(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "notes.md")
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		for i := 0; ; i++ {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			_ = filewriter.WriteAtomic(file, strconv.Itoa(i))
-			time.Sleep(3 * time.Millisecond)
+func TestSettle(t *testing.T) {
+	t.Run("returns once two reads agree", func(t *testing.T) {
+		reads := []string{"half", "full", "full"}
+		got, ok := settle(func() (string, bool) {
+			r := reads[0]
+			reads = reads[1:]
+			return r, true
+		}, 0, 10)
+		if !ok || got != "full" {
+			t.Fatalf("settle = %q, %v", got, ok)
 		}
-	}()
-	if got, ok := readSettled(file); ok {
-		t.Fatalf("readSettled = %q, want !ok", got)
+	})
+	t.Run("gives up on content that keeps changing", func(t *testing.T) {
+		n := 0
+		got, ok := settle(func() (string, bool) {
+			n++
+			return fmt.Sprint(n), true
+		}, 0, 10)
+		if ok || n != 10 {
+			t.Fatalf("settle = %q, %v after %d reads", got, ok, n)
+		}
+	})
+}
+
+func TestStopRetriesWhenFileChangesWhileSaving(t *testing.T) {
+	f := setup(t, "one\n", setupOpts{writeDelay: time.Minute})
+	attempts := 0
+	f.session.beforeFinalWrite = func(attempt int) {
+		attempts = attempt
+		if attempt == 1 {
+			// An edit that arrived while leaving, and someone saving the file.
+			f.session.Doc.Transact(func(txn *crdt.Transaction) { f.session.Text.Insert(txn, 0, "zero\n", nil) })
+			if err := os.WriteFile(f.file, []byte("one\ntwo\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != "zero\none\ntwo\n" || attempts != 2 {
+		t.Fatalf("content = %q after %d attempts", got, attempts)
+	}
+}
+
+// blockingConn runs hook before its first write once armed.
+type blockingConn struct {
+	protocol.Conn
+	armed atomic.Bool
+	hook  func()
+}
+
+func (c *blockingConn) Write(ctx context.Context, data []byte) error {
+	if c.armed.CompareAndSwap(true, false) {
+		c.hook()
+	}
+	return c.Conn.Write(ctx, data)
+}
+
+func TestStopSavesEditsArrivingWhileLeaving(t *testing.T) {
+	var conn *blockingConn
+	f := setup(t, "a", setupOpts{writeDelay: time.Minute, wrap: func(c protocol.Conn) protocol.Conn {
+		conn = &blockingConn{Conn: c}
+		return conn
+	}})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
+	// Destroy sends our departure; hold it until a guest edit has come in.
+	conn.hook = func() {
+		g.insert(1, " late")
+		prototest.WaitFor(t, wait, func() bool { return f.session.Text.ToString() == "a late" }, "late edit")
+	}
+	f.session.beforeDestroy = func() { conn.armed.Store(true) }
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, f.file); got != "a late" {
+		t.Fatalf("content = %q", got)
 	}
 }

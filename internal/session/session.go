@@ -57,6 +57,13 @@ type Session struct {
 	stopped   bool
 	stopOnce  sync.Once
 	stopErr   error
+
+	// syncing serializes syncs from disk, and lets Stop wait out one in flight.
+	syncing sync.Mutex
+
+	// Test seams, called during Stop.
+	beforeDestroy    func()
+	beforeFinalWrite func(attempt int)
 }
 
 // fileOrigin tags changes merged in from the file.
@@ -254,13 +261,30 @@ func (s *Session) scheduleSyncFromDisk() {
 	if s.readTimer != nil {
 		s.readTimer.Stop()
 	}
-	s.readTimer = time.AfterFunc(50*time.Millisecond, s.SyncFromDisk)
+	s.readTimer = time.AfterFunc(50*time.Millisecond, func() {
+		s.syncing.Lock()
+		defer s.syncing.Unlock()
+		s.mu.Lock()
+		stopped := s.stopped
+		s.mu.Unlock()
+		if !stopped {
+			s.syncFromDisk()
+		}
+	})
 }
 
 // SyncFromDisk merges the file's current content into the doc if it changed
 // outside ima, against what we last wrote.
 func (s *Session) SyncFromDisk() {
+	s.syncing.Lock()
+	defer s.syncing.Unlock()
+	s.syncFromDisk()
+}
+
+// syncFromDisk is SyncFromDisk with s.syncing held.
+func (s *Session) syncFromDisk() {
 	changed := false
+	// Rebase drops any pending write, which predates the merge.
 	s.Writer.Rebase(func(lastWritten string) string {
 		onDisk, ok := readSettled(s.file)
 		if !ok || onDisk == lastWritten {
@@ -273,8 +297,7 @@ func (s *Session) SyncFromDisk() {
 		return onDisk
 	})
 	if changed {
-		// Remote edits made meanwhile are not on disk yet; this also replaces any
-		// stale pending write.
+		// Remote edits made meanwhile are not on disk yet.
 		s.Writer.Schedule(s.Text.ToString())
 	}
 }
@@ -297,18 +320,33 @@ func (s *Session) Stop() error {
 			_ = s.watcher.Close()
 			<-s.watchDone
 		}
-		// Merge a last-second external edit while peers can still get it, then
-		// leave, so no remote edit can arrive after the final write.
-		s.SyncFromDisk()
+		// Waits for a sync already started by the timer; none can start after this.
+		s.syncing.Lock()
+		defer s.syncing.Unlock()
+
+		// Merge a last-second external edit while peers can still get it, and
+		// save right away: leaving can take a while, and a second Ctrl+C exits.
+		s.syncFromDisk()
+		s.Writer.Schedule(s.Text.ToString())
+		_ = s.Writer.Flush()
+
+		if s.beforeDestroy != nil {
+			s.beforeDestroy()
+		}
 		s.Client.Destroy()
-		for range finalWriteAttempts {
+
+		// Save again: edits may have arrived while leaving, and none can arrive now.
+		for attempt := 1; ; attempt++ {
+			if s.beforeFinalWrite != nil {
+				s.beforeFinalWrite(attempt)
+			}
 			s.Writer.Schedule(s.Text.ToString())
 			s.stopErr = s.Writer.Flush()
-			if !errors.Is(s.stopErr, filewriter.ErrExternalChange) {
+			if !errors.Is(s.stopErr, filewriter.ErrExternalChange) || attempt == finalWriteAttempts {
 				break
 			}
 			// Someone saved the file meanwhile: merge it in and try again.
-			s.SyncFromDisk()
+			s.syncFromDisk()
 		}
 		s.stopAlive()
 		s.awareness.Destroy()
@@ -320,12 +358,14 @@ func (s *Session) Stop() error {
 // see a half-written file. Read until two consecutive reads agree; report !ok if
 // they never do, so a half-written file is not taken for the new content.
 func readSettled(path string) (string, bool) {
-	const interval = 30 * time.Millisecond
-	const maxReads = 10
-	previous, prevOK := filewriter.ReadFile(path)
+	return settle(func() (string, bool) { return filewriter.ReadFile(path) }, 30*time.Millisecond, 10)
+}
+
+func settle(read func() (string, bool), interval time.Duration, maxReads int) (string, bool) {
+	previous, prevOK := read()
 	for range maxReads - 1 {
 		time.Sleep(interval)
-		current, ok := filewriter.ReadFile(path)
+		current, ok := read()
 		if current == previous && ok == prevOK {
 			return current, ok
 		}

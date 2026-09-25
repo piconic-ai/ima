@@ -128,3 +128,19 @@ func TestFlushesLandInScheduleOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestRebaseDropsContentComputedBeforeIt(t *testing.T) {
+	path := setup(t, "v0")
+	w := New(path, "v0", Options{Delay: time.Minute})
+	w.Schedule("stale")
+	if err := os.WriteFile(path, []byte("edited elsewhere"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.Rebase(func(string) string { return "edited elsewhere" })
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, path); got != "edited elsewhere" {
+		t.Fatalf("content = %q", got)
+	}
+}

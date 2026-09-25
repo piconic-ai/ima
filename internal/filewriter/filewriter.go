@@ -146,8 +146,22 @@ func (w *Writer) LastWritten() string {
 
 // Rebase runs fn with exclusive access to the file and sets the known on-disk
 // content to what fn returns. fn is given the content last written.
+//
+// When that content changes, any pending content is dropped: it was computed
+// before the change and would clobber it. Schedule the merged content afterwards.
 func (w *Writer) Rebase(fn func(lastWritten string) string) {
 	w.io.Lock()
 	defer w.io.Unlock()
-	w.lastWritten = fn(w.lastWritten)
+	next := fn(w.lastWritten)
+	if next == w.lastWritten {
+		return
+	}
+	w.lastWritten = next
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = nil
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
 }
