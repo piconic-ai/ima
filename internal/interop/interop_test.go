@@ -2,6 +2,7 @@
 package interop
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -99,7 +100,7 @@ func TestGoHostWithJavaScriptGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(s.Stop)
+	t.Cleanup(func() { _ = s.Stop() })
 	prototest.WaitFor(t, 5*time.Second, func() bool { return s.Client.Status() == protocol.StatusConnected }, "host connected")
 
 	share, _ := url.Parse(s.URL)
@@ -107,14 +108,35 @@ func TestGoHostWithJavaScriptGuest(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	guest := exec.CommandContext(ctx, "node", "testdata/guest.mjs", dir, wsURL, share.Fragment)
-	var stdout, stderr strings.Builder
-	guest.Stdout = &stdout
+	var stderr strings.Builder
 	guest.Stderr = &stderr
+	stdout, err := guest.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := guest.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- guest.Wait() }()
+	lines := make(chan string)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+	}()
+	next := func(what string) string {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("guest exited before %s: %v\n%s", what, guest.Wait(), stderr.String())
+			}
+			return line
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s\n%s", what, stderr.String())
+			return ""
+		}
+	}
 
 	read := func() string {
 		b, _ := os.ReadFile(file)
@@ -127,14 +149,19 @@ func TestGoHostWithJavaScriptGuest(t *testing.T) {
 	if err := os.WriteFile(file, []byte(final), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
+	var got string
+	if line := next("the final text"); json.Unmarshal([]byte(line), &got) != nil || got != final {
+		t.Fatalf("guest ended with %q\n%s", line, stderr.String())
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if line := next("the host to leave"); line != "host left" {
+		t.Fatalf("guest said %q\n%s", line, stderr.String())
+	}
+	if err := guest.Wait(); err != nil {
 		t.Fatalf("guest failed: %v\n%s", err, stderr.String())
 	}
-	var got string
-	if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil || got != final {
-		t.Fatalf("guest ended with %q (%v)\n%s", stdout.String(), err, stderr.String())
-	}
-	s.Stop()
 	if read() != final {
 		t.Fatalf("file = %q", read())
 	}

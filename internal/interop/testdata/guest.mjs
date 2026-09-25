@@ -46,6 +46,11 @@ const s = text.toString()
 text.insert(s.indexOf(' world'), '[X]')
 text.delete(s.indexOf('ん'), 1)
 await until('the external edit', () => text.toString().includes('from file'))
-process.stdout.write(JSON.stringify(text.toString()))
+process.stdout.write(`${JSON.stringify(text.toString())}\n`)
+// The host stops next; its departure arrives as a null awareness state.
+await until('the host to leave', () =>
+  [...awareness.getStates().values()].every((s) => s.role !== 'host'),
+)
+process.stdout.write('host left\n')
 await client.destroy()
 process.exit(0)

@@ -8,11 +8,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/piconic-ai/ima/internal/filewriter"
 	"github.com/piconic-ai/ima/internal/protocol"
 	"github.com/piconic-ai/ima/internal/protocol/prototest"
 	"github.com/reearth/ygo/awareness"
@@ -63,7 +65,7 @@ func setup(t *testing.T, content string, o setupOpts) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(s.Stop)
+	t.Cleanup(func() { _ = s.Stop() })
 	f.session = s
 	// Guests are turned away until the host is in the room.
 	prototest.WaitFor(t, wait, func() bool { return s.Client.Status() == protocol.StatusConnected }, "host connected")
@@ -175,7 +177,9 @@ func TestWritesFinalStateOnStop(t *testing.T) {
 	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
 	g.insert(1, "b")
 	prototest.WaitFor(t, wait, func() bool { return f.session.Text.ToString() == "ab" }, "host to see the edit")
-	f.session.Stop()
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	if got := readFile(t, f.file); got != "ab" {
 		t.Fatalf("content = %q", got)
 	}
@@ -218,7 +222,9 @@ func TestMergesExternalEditWithConcurrentRemoteEdit(t *testing.T) {
 	prototest.WaitFor(t, wait, func() bool { return g.String() == merged }, "merged doc")
 	prototest.WaitFor(t, wait, func() bool { return readFile(t, f.file) == merged }, "merged file")
 	g.Destroy()
-	f.session.Stop()
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	if got := readFile(t, f.file); got != merged {
 		t.Fatalf("content = %q", got)
 	}
@@ -245,6 +251,45 @@ func TestClosesRoomForGuestsOnStop(t *testing.T) {
 	f := setup(t, "bye", setupOpts{})
 	g := joinAsGuest(t, f.relay, f.session.URL)
 	prototest.WaitFor(t, wait, func() bool { return g.String() == "bye" }, "guest to sync")
-	f.session.Stop()
+	if err := f.session.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	prototest.WaitFor(t, wait, func() bool { return g.Status() == protocol.StatusClosed }, "guest closed")
+}
+
+func TestStopReportsFailedFinalWrite(t *testing.T) {
+	f := setup(t, "a", setupOpts{writeDelay: time.Minute})
+	g := joinAsGuest(t, f.relay, f.session.URL)
+	prototest.WaitFor(t, wait, func() bool { return g.String() == "a" }, "guest to sync")
+	g.insert(1, "b")
+	prototest.WaitFor(t, wait, func() bool { return f.session.Text.ToString() == "ab" }, "host to see the edit")
+	// The atomic write needs a temp file next to the target.
+	dir := filepath.Dir(f.file)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := f.session.Stop(); err == nil {
+		t.Fatal("Stop should report the failed write")
+	}
+}
+
+func TestReadSettledGivesUpOnAFileThatKeepsChanging(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "notes.md")
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_ = filewriter.WriteAtomic(file, strconv.Itoa(i))
+			time.Sleep(3 * time.Millisecond)
+		}
+	}()
+	if got, ok := readSettled(file); ok {
+		t.Fatalf("readSettled = %q, want !ok", got)
+	}
 }

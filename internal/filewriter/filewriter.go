@@ -2,6 +2,7 @@
 package filewriter
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -97,11 +98,20 @@ func (w *Writer) Schedule(content string) {
 	if w.timer != nil {
 		w.timer.Stop()
 	}
-	w.timer = time.AfterFunc(w.delay, w.Flush)
+	w.timer = time.AfterFunc(w.delay, func() { _ = w.Flush() })
 }
 
+// ErrExternalChange means the file changed outside ima since the last write,
+// so the write was skipped to avoid clobbering it.
+var ErrExternalChange = errors.New("file changed outside ima")
+
 // Flush writes any pending content now and returns once it is written.
-func (w *Writer) Flush() {
+func (w *Writer) Flush() error {
+	// Take io before the pending content, so flushes land in the order their
+	// content was scheduled.
+	w.io.Lock()
+	defer w.io.Unlock()
+
 	w.mu.Lock()
 	if w.timer != nil {
 		w.timer.Stop()
@@ -111,21 +121,20 @@ func (w *Writer) Flush() {
 	w.pending = nil
 	w.mu.Unlock()
 
-	w.io.Lock()
-	defer w.io.Unlock()
 	if pending == nil || *pending == w.lastWritten {
-		return
+		return nil
 	}
 	onDisk, ok := ReadFile(w.path)
 	if ok && onDisk != w.lastWritten {
 		w.onExternalChange()
-		return
+		return ErrExternalChange
 	}
 	if err := WriteAtomic(w.path, *pending); err != nil {
 		w.onError(err)
-		return
+		return err
 	}
 	w.lastWritten = *pending
+	return nil
 }
 
 // LastWritten returns the content last written to (or read from) the file.

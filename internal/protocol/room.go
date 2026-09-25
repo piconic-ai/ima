@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"sync"
@@ -16,6 +17,9 @@ import (
 // Status is the connection state of a Client. StatusClosed is final: the host
 // ended the session.
 type Status string
+
+// errDestroyed ends the connection loop when the Client was destroyed mid-dial.
+var errDestroyed = errors.New("client destroyed")
 
 const (
 	StatusConnecting   Status = "connecting"
@@ -172,7 +176,7 @@ func (c *Client) run() {
 			attempts = 0
 			err = c.serve(conn)
 		}
-		if c.ctx.Err() != nil {
+		if c.ctx.Err() != nil || errors.Is(err, errDestroyed) {
 			return
 		}
 		c.dropRemoteAwareness()
@@ -200,8 +204,9 @@ func (c *Client) serve(conn Conn) error {
 	c.mu.Lock()
 	if c.destroyed {
 		c.mu.Unlock()
+		out.stop()
 		_ = conn.Close()
-		return c.ctx.Err()
+		return errDestroyed
 	}
 	c.out = out
 	c.mu.Unlock()
@@ -285,6 +290,9 @@ func (c *Client) handleAwarenessChange(ev awareness.ChangeEvent) {
 
 func (c *Client) dropRemoteAwareness() {
 	// Every remote client counts as expired after a zero timeout; the local one never does.
+	// Unlike removeAwarenessStates in the TS client, RemoveExpired takes no origin, so
+	// handleAwarenessUpdate tries to broadcast the removals too; send drops them since
+	// we are disconnected.
 	c.aw.RemoveExpired(0)
 }
 

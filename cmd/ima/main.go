@@ -119,7 +119,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}()
 	status.stop()
 	fmt.Fprintln(stdout, "Saving and closing the room…")
-	s.Stop()
+	if err := s.Stop(); err != nil {
+		fmt.Fprintf(stderr, "ima: could not save %s: %v\n", arg, err)
+		return 1
+	}
 	fmt.Fprintf(stdout, "Saved %s\n", arg)
 	return 0
 }

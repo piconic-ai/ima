@@ -1,6 +1,7 @@
 package filewriter
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,8 +93,38 @@ func TestRefusesToClobberExternalChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Schedule("v1")
-	w.Flush()
+	if err := w.Flush(); !errors.Is(err, ErrExternalChange) {
+		t.Fatalf("Flush = %v", err)
+	}
 	if got := read(t, path); got != "edited elsewhere" || called != 1 {
 		t.Fatalf("content = %q, called = %d", got, called)
+	}
+}
+
+// A flush fired by the debounce timer while the file is busy must not land
+// after, and overwrite, a later flush of newer content.
+func TestFlushesLandInScheduleOrder(t *testing.T) {
+	for range 20 {
+		path := setup(t, "v0")
+		w := New(path, "v0", Options{Delay: 5 * time.Millisecond})
+		release := make(chan struct{})
+		busy := make(chan struct{})
+		go w.Rebase(func(last string) string {
+			close(busy)
+			<-release
+			return last
+		})
+		<-busy
+		w.Schedule("stale")
+		time.Sleep(20 * time.Millisecond) // the timer fires and waits for the file
+		w.Schedule("final")
+		close(release)
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond) // let the timer's flush finish
+		if got := read(t, path); got != "final" {
+			t.Fatalf("content = %q", got)
+		}
 	}
 }

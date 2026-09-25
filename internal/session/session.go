@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -55,6 +56,7 @@ type Session struct {
 	readTimer *time.Timer
 	stopped   bool
 	stopOnce  sync.Once
+	stopErr   error
 }
 
 // fileOrigin tags changes merged in from the file.
@@ -149,7 +151,7 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 
 	if opts.Watch {
 		if err := s.watch(); err != nil {
-			s.Stop()
+			_ = s.Stop()
 			return nil, err
 		}
 	}
@@ -277,8 +279,13 @@ func (s *Session) SyncFromDisk() {
 	}
 }
 
-// Stop writes the final state to the file and leaves the room.
-func (s *Session) Stop() {
+// finalWriteAttempts bounds how often Stop retries when the file keeps changing
+// outside ima while it tries to save.
+const finalWriteAttempts = 3
+
+// Stop leaves the room and writes the final state to the file. It reports an
+// error when the final state could not be saved.
+func (s *Session) Stop() error {
 	s.stopOnce.Do(func() {
 		s.mu.Lock()
 		s.stopped = true
@@ -290,17 +297,28 @@ func (s *Session) Stop() {
 			_ = s.watcher.Close()
 			<-s.watchDone
 		}
+		// Merge a last-second external edit while peers can still get it, then
+		// leave, so no remote edit can arrive after the final write.
 		s.SyncFromDisk()
-		s.Writer.Schedule(s.Text.ToString())
-		s.Writer.Flush()
 		s.Client.Destroy()
+		for range finalWriteAttempts {
+			s.Writer.Schedule(s.Text.ToString())
+			s.stopErr = s.Writer.Flush()
+			if !errors.Is(s.stopErr, filewriter.ErrExternalChange) {
+				break
+			}
+			// Someone saved the file meanwhile: merge it in and try again.
+			s.SyncFromDisk()
+		}
 		s.stopAlive()
 		s.awareness.Destroy()
 	})
+	return s.stopErr
 }
 
 // Saving is often truncate-then-write, so a read right after the change event can
-// see a half-written file. Read until two consecutive reads agree.
+// see a half-written file. Read until two consecutive reads agree; report !ok if
+// they never do, so a half-written file is not taken for the new content.
 func readSettled(path string) (string, bool) {
 	const interval = 30 * time.Millisecond
 	const maxReads = 10
@@ -313,5 +331,5 @@ func readSettled(path string) (string, bool) {
 		}
 		previous, prevOK = current, ok
 	}
-	return previous, prevOK
+	return "", false
 }
