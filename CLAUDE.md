@@ -10,14 +10,15 @@ The name comes from the Japanese 居間 (living room) and 今 (now).
 - Never send the key to the server (not in requests, logs, or error reports).
 - The minimal version only co-edits a single Markdown file. No auth, comments, or AI features.
 
-## Layout (pnpm workspaces)
-- packages/protocol: encryption and message format (shared by CLI and web)
+## Layout
+- cmd/ima, internal/: the `ima` command (Go, single binary). internal/protocol mirrors packages/protocol on top of reearth/ygo; keep the wire format in sync
+- packages/protocol: encryption, message format and room client for the web (pnpm workspace)
 - packages/worker: Hono + Durable Objects (WebSocket Hibernation API). Also serves the web assets.
-- packages/cli: the `ima` command (Node.js 22+). Published to npm as @piconic/ima
 - packages/web: editor built on CodeMirror 6 + y-codemirror.next
 
 ## Stack
-TypeScript / Yjs / y-protocols / Cloudflare Workers / Vitest
+CLI: Go / ygo (pure-Go Yjs) / coder/websocket
+Server and web: TypeScript / Yjs / y-protocols / Cloudflare Workers / Vitest
 
 ## Workflow
 - Present a plan before implementing.

@@ -1,0 +1,144 @@
+// Package filewriter writes the shared document back to the host's file.
+package filewriter
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// WriteAtomic writes the file atomically: a temp file in the same directory,
+// then rename over. The file's mode is kept.
+func WriteAtomic(path, content string) error {
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".%s.ima-%d.tmp", filepath.Base(path), os.Getpid()))
+	mode := fs.FileMode(0o644)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// WriteFile's mode is subject to the umask; set it explicitly.
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// ReadFile reads path as text, replacing invalid UTF-8 like a text editor would.
+// ok is false when the file cannot be read.
+func ReadFile(path string) (content string, ok bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return strings.ToValidUTF8(string(b), "�"), true
+}
+
+// Writer debounces writes of the latest content to a file. It skips writes when
+// the content equals what is already on disk (as far as it knows), and refuses to
+// clobber a file that someone else changed since its last write: it calls
+// OnExternalChange instead, so the change can be merged first.
+type Writer struct {
+	path             string
+	delay            time.Duration
+	onError          func(error)
+	onExternalChange func()
+
+	mu      sync.Mutex // guards timer and pending
+	timer   *time.Timer
+	pending *string
+
+	io          sync.Mutex // serializes disk access; guards lastWritten
+	lastWritten string
+}
+
+type Options struct {
+	Delay            time.Duration
+	OnError          func(error)
+	OnExternalChange func()
+}
+
+func New(path, initial string, opts Options) *Writer {
+	w := &Writer{
+		path:             path,
+		delay:            opts.Delay,
+		onError:          opts.OnError,
+		onExternalChange: opts.OnExternalChange,
+		lastWritten:      initial,
+	}
+	if w.delay == 0 {
+		w.delay = time.Second
+	}
+	if w.onError == nil {
+		w.onError = func(error) {}
+	}
+	if w.onExternalChange == nil {
+		w.onExternalChange = func() {}
+	}
+	return w
+}
+
+// Schedule writes content after the delay, unless newer content comes first.
+func (w *Writer) Schedule(content string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = &content
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.timer = time.AfterFunc(w.delay, w.Flush)
+}
+
+// Flush writes any pending content now and returns once it is written.
+func (w *Writer) Flush() {
+	w.mu.Lock()
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+	pending := w.pending
+	w.pending = nil
+	w.mu.Unlock()
+
+	w.io.Lock()
+	defer w.io.Unlock()
+	if pending == nil || *pending == w.lastWritten {
+		return
+	}
+	onDisk, ok := ReadFile(w.path)
+	if ok && onDisk != w.lastWritten {
+		w.onExternalChange()
+		return
+	}
+	if err := WriteAtomic(w.path, *pending); err != nil {
+		w.onError(err)
+		return
+	}
+	w.lastWritten = *pending
+}
+
+// LastWritten returns the content last written to (or read from) the file.
+func (w *Writer) LastWritten() string {
+	w.io.Lock()
+	defer w.io.Unlock()
+	return w.lastWritten
+}
+
+// Rebase runs fn with exclusive access to the file and sets the known on-disk
+// content to what fn returns. fn is given the content last written.
+func (w *Writer) Rebase(fn func(lastWritten string) string) {
+	w.io.Lock()
+	defer w.io.Unlock()
+	w.lastWritten = fn(w.lastWritten)
+}
