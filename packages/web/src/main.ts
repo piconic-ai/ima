@@ -169,6 +169,7 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
     main.dataset.view = mode
     preview.active = mode !== 'editor'
     editor.requestMeasure()
+    followEditor()
   }
   showView(view.mode)
 

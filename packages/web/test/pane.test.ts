@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { EditorView } from '@codemirror/view'
 import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { monotonic, PreviewPane, scrollTarget } from '../src/pane.ts'
@@ -75,13 +76,16 @@ describe('PreviewPane', () => {
   })
 
   it('catches up on edits made while hidden', async () => {
-    const { text, pane } = setup()
+    const { text, pane, rendered } = setup()
+    text.insert(0, 'first')
     pane.active = true
-    await vi.waitFor(() => expect(pane.element.innerHTML).toBe(''))
+    await vi.waitFor(() => expect(rendered).toHaveBeenCalledTimes(1))
     pane.active = false
     text.insert(0, 'later')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(rendered).toHaveBeenCalledTimes(1)
     pane.active = true
-    await vi.waitFor(() => expect(pane.element.textContent).toContain('later'))
+    await vi.waitFor(() => expect(pane.element.textContent).toContain('laterfirst'))
   })
 
   it('says so when the renderer cannot load, and retries on the next edit', async () => {
@@ -95,5 +99,43 @@ describe('PreviewPane', () => {
     await vi.waitFor(() => expect(pane.element.textContent).toContain('could not be loaded'))
     text.insert(2, '!')
     await vi.waitFor(() => expect(pane.element.textContent).toBe('hi!\n'))
+  })
+})
+
+describe('PreviewPane.follow', () => {
+  function sized<T extends HTMLElement | object>(
+    target: T,
+    size: { scrollTop?: number; scrollHeight: number; clientHeight: number },
+  ): T {
+    let top = size.scrollTop ?? 0
+    Object.defineProperty(target, 'scrollTop', { get: () => top, set: (v) => void (top = v) })
+    Object.defineProperty(target, 'scrollHeight', { value: size.scrollHeight })
+    Object.defineProperty(target, 'clientHeight', { value: size.clientHeight })
+    return target
+  }
+
+  function fakeEditor(scroller: { scrollTop: number; scrollHeight: number; clientHeight: number }) {
+    return {
+      scrollDOM: sized({}, scroller),
+      documentPadding: { top: 0 },
+      lineBlockAtHeight: () => ({ from: 0, top: 0, height: 20 }),
+      state: { doc: { lines: 3, lineAt: () => ({ number: 1 }) } },
+    } as unknown as EditorView
+  }
+
+  it('leaves the preview alone when the whole document fits the editor', () => {
+    const pane = new PreviewPane(new Y.Doc().getText('content'))
+    sized(pane.element, { scrollTop: 120, scrollHeight: 2000, clientHeight: 500 })
+    pane.follow(fakeEditor({ scrollTop: 0, scrollHeight: 400, clientHeight: 500 }))
+    expect(pane.element.scrollTop).toBe(120)
+  })
+
+  it('goes to the bottom with the editor, not before it has scrolled', () => {
+    const pane = new PreviewPane(new Y.Doc().getText('content'))
+    sized(pane.element, { scrollTop: 120, scrollHeight: 2000, clientHeight: 500 })
+    pane.follow(fakeEditor({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 }))
+    expect(pane.element.scrollTop).toBe(0)
+    pane.follow(fakeEditor({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 }))
+    expect(pane.element.scrollTop).toBe(1500)
   })
 })

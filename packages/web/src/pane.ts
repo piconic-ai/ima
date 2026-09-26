@@ -88,8 +88,13 @@ export class PreviewPane {
   follow(view: EditorView): void {
     const pane = this.element
     const scroller = view.scrollDOM
+    // A document that fits the editor leaves the preview for the reader to scroll.
+    if (scroller.scrollHeight <= scroller.clientHeight) return
     const max = pane.scrollHeight - pane.clientHeight
-    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) {
+    if (
+      scroller.scrollTop > 0 &&
+      scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+    ) {
       pane.scrollTop = max
       return
     }
