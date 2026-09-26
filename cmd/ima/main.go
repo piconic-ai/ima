@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,9 +14,11 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/piconic-ai/ima/internal/access"
 	"github.com/piconic-ai/ima/internal/clipboard"
 	"github.com/piconic-ai/ima/internal/protocol"
 	"github.com/piconic-ai/ima/internal/session"
@@ -45,7 +49,10 @@ Edits are written back to the file. Press Ctrl+C to finish.
 Environment:
   IMA_SERVER                ima server URL (default: ` + defaultServer + `)
   IMA_ACCESS_CLIENT_ID      Cloudflare Access service token, for a server
-  IMA_ACCESS_CLIENT_SECRET  behind Cloudflare Access`
+  IMA_ACCESS_CLIENT_SECRET  behind Cloudflare Access
+
+A server behind Cloudflare Access signs you in with cloudflared, unless a
+service token is set.`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -95,7 +102,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cancel()
 	}()
 
-	s, err := session.Start(ctx, session.Options{
+	cloudflared := &access.Cloudflared{Progress: stderr}
+	s, err := start(ctx, cloudflared.Token, session.Options{
 		File:     file,
 		Server:   server,
 		Header:   header,
@@ -228,4 +236,31 @@ func accessHeader(getenv func(string) string) (http.Header, error) {
 		return nil, errors.New("set both IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET")
 	}
 	return http.Header{"Cf-Access-Client-Id": {id}, "Cf-Access-Client-Secret": {secret}}, nil
+}
+
+// start shares the file, signing in with Cloudflare Access when the server is
+// behind it and no service token was given.
+func start(ctx context.Context, signIn func(context.Context, string) (string, error), opts session.Options) (*session.Session, error) {
+	s, err := session.Start(ctx, opts)
+	if !errors.Is(err, session.ErrBehindAccess) || opts.Header != nil {
+		return s, err
+	}
+	token, err := signIn(ctx, opts.Server)
+	if errors.Is(err, access.ErrNoCloudflared) {
+		return nil, fmt.Errorf("%s is behind Cloudflare Access. Install cloudflared to sign in (for example, brew install cloudflared), or set IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET to a service token", opts.Server)
+	}
+	if err != nil {
+		return nil, err
+	}
+	opts.Header = http.Header{access.Header: {token}}
+	if email := access.Email(token); email != "" {
+		opts.Avatar = gravatarURL(email)
+	}
+	return session.Start(ctx, opts)
+}
+
+// gravatarURL matches the web editor's: 404 for unknown emails, so others see initials.
+func gravatarURL(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return "https://gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?s=64&d=404"
 }

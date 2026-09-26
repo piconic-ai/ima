@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -226,8 +227,9 @@ func TestExplainsCloudflareAccess(t *testing.T) {
 		header http.Header
 		want   string
 	}{
-		{"no token", nil, "is behind Cloudflare Access; set IMA_ACCESS_CLIENT_ID"},
-		{"rejected token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "did not accept the service token"},
+		{"no credentials", nil, "is behind Cloudflare Access"},
+		{"rejected service token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "did not accept our credentials"},
+		{"rejected user token", http.Header{"Cf-Access-Token": {"expired"}}, "did not accept our credentials"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,6 +247,9 @@ func TestExplainsCloudflareAccess(t *testing.T) {
 			_, err := Start(context.Background(), Options{File: file, Server: server.URL, Header: tt.header})
 			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), server.URL) {
 				t.Fatalf("err = %v", err)
+			}
+			if !errors.Is(err, ErrBehindAccess) {
+				t.Fatalf("err = %v, want ErrBehindAccess", err)
 			}
 		})
 	}
@@ -270,6 +275,34 @@ func TestWritesFinalStateOnStop(t *testing.T) {
 	if got := readFile(t, f.file); got != "ab" {
 		t.Fatalf("content = %q", got)
 	}
+}
+
+func TestShowsHostAvatar(t *testing.T) {
+	relay := prototest.NewRelay(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "AAAAAAAAAAAAAAAAAAAAAA", "hostToken": "host-token"})
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "notes.md")
+	_ = os.WriteFile(file, []byte("x"), 0o644)
+	s, err := Start(context.Background(), Options{
+		File: file, Server: server.URL, Name: "kfly8", Avatar: "https://gravatar.com/avatar/x", Dial: relay.Dial,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	g := joinAsGuest(t, relay, s.URL)
+	prototest.WaitFor(t, wait, func() bool {
+		for _, st := range g.aw.GetStates() {
+			user, _ := st.State["user"].(map[string]any)
+			if st.State["role"] == "host" && user["name"] == "kfly8" && user["avatar"] == "https://gravatar.com/avatar/x" {
+				return true
+			}
+		}
+		return false
+	}, "host avatar")
 }
 
 func TestAnnouncesItselfAsHost(t *testing.T) {

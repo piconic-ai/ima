@@ -24,8 +24,10 @@ import (
 type Options struct {
 	File string
 	// Server is the base URL of the ima server, e.g. https://ima.piconic.ai
-	Server     string
-	Name       string
+	Server string
+	Name   string
+	// Avatar is the URL of the host's picture, shown to the others.
+	Avatar     string
 	WriteDelay time.Duration
 	// Watch streams edits made to the file outside ima into the room.
 	Watch bool
@@ -109,7 +111,11 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 	if name == "" {
 		name = "host"
 	}
-	aw.SetLocalState(map[string]any{"role": "host", "name": name, "file": filepath.Base(opts.File)})
+	user := map[string]any{"name": name}
+	if opts.Avatar != "" {
+		user["avatar"] = opts.Avatar
+	}
+	aw.SetLocalState(map[string]any{"role": "host", "name": name, "user": user, "file": filepath.Base(opts.File)})
 
 	s := &Session{
 		URL:       server + "/r/" + room.ID + "#" + key,
@@ -173,6 +179,9 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 	return s, nil
 }
 
+// ErrBehindAccess means Cloudflare Access sent us to its login page.
+var ErrBehindAccess = errors.New("is behind Cloudflare Access")
+
 type room struct {
 	ID        string `json:"id"`
 	HostToken string `json:"hostToken"`
@@ -196,10 +205,10 @@ func createRoom(ctx context.Context, client *http.Client, server string, header 
 	defer res.Body.Close()
 	// Cloudflare Access answers requests it does not let through with its login page.
 	if strings.HasPrefix(res.Request.URL.Path, "/cdn-cgi/access/") {
-		if header.Get("CF-Access-Client-Id") != "" {
-			return nil, fmt.Errorf("failed to create a room: %s is behind Cloudflare Access and did not accept the service token in IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET", server)
+		if header.Get("Cf-Access-Client-Id") != "" || header.Get("Cf-Access-Token") != "" {
+			return nil, fmt.Errorf("failed to create a room: %s did not accept our credentials: %w", server, ErrBehindAccess)
 		}
-		return nil, fmt.Errorf("failed to create a room: %s is behind Cloudflare Access; set IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET to a service token", server)
+		return nil, fmt.Errorf("failed to create a room: %s %w", server, ErrBehindAccess)
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return nil, fmt.Errorf("failed to create a room on %s: %s", server, res.Status)

@@ -114,13 +114,22 @@ ima works on a host protected by a Cloudflare Access self-hosted application.
 - Collaborators sign in with Access and join without typing a name. The editor
   reads their name from `/cdn-cgi/access/get-identity`, which Access answers
   itself, and their avatar from the IdP's `picture` claim or Gravatar.
-- The CLI authenticates with a service token. Add a Service Auth policy to the
-  application and set:
+- The host just runs `ima notes.md`. When the server is behind Access, ima
+  signs in with [cloudflared](https://github.com/cloudflare/cloudflared): the
+  browser opens once per Access session, and the host joins as themselves,
+  with a Gravatar avatar from their email. Install cloudflared first, for
+  example with `brew install cloudflared`.
+- Bots and CI can use a service token instead. Add a Service Auth policy to
+  the application and set the variables below, for example with
+  `op run --env-file=.env -- ima notes.md` to keep the secret in 1Password:
 
 ```sh
 export IMA_ACCESS_CLIENT_ID=<client id>.access
 export IMA_ACCESS_CLIENT_SECRET=<client secret>
 ```
+
+The token is read once when ima starts. If the Access session expires while
+sharing (24 hours by default), ima cannot reconnect until it is restarted.
 
 The Worker runs on the Workers Free plan (100,000 requests a day). It uses a
 SQLite-backed Durable Object and no D1 or KV. `piconic.ai` must be on the same
