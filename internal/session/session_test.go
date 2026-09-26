@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -198,19 +199,19 @@ func TestSendsHeaderToServer(t *testing.T) {
 	defer server.Close()
 	file := filepath.Join(t.TempDir(), "notes.md")
 	_ = os.WriteFile(file, []byte("x"), 0o644)
-	header := http.Header{"Cf-Access-Client-Id": {"id.access"}}
+	header := http.Header{"Cf-Access-Token": {"user-token"}}
 	s, err := Start(context.Background(), Options{File: file, Server: server.URL, Header: header, Dial: relay.Dial})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Stop()
-	if v := got.Get("CF-Access-Client-Id"); v != "id.access" {
-		t.Fatalf("room request CF-Access-Client-Id = %q", v)
+	if v := got.Get("Cf-Access-Token"); v != "user-token" {
+		t.Fatalf("room request Cf-Access-Token = %q", v)
 	}
 	prototest.WaitFor(t, wait, func() bool { return len(relay.Headers()) == 1 }, "dial")
 	ws := relay.Headers()[0]
-	if v := ws.Get("CF-Access-Client-Id"); v != "id.access" {
-		t.Fatalf("WebSocket CF-Access-Client-Id = %q", v)
+	if v := ws.Get("Cf-Access-Token"); v != "user-token" {
+		t.Fatalf("WebSocket Cf-Access-Token = %q", v)
 	}
 	if v := ws.Get("Authorization"); v != "Bearer host-token" {
 		t.Fatalf("WebSocket Authorization = %q", v)
@@ -226,8 +227,8 @@ func TestExplainsCloudflareAccess(t *testing.T) {
 		header http.Header
 		want   string
 	}{
-		{"no token", nil, "is behind Cloudflare Access; set IMA_ACCESS_CLIENT_ID"},
-		{"rejected token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "did not accept the service token"},
+		{"no credentials", nil, "Cloudflare Access sent us to its login page"},
+		{"rejected user token", http.Header{"Cf-Access-Token": {"expired"}}, "Cloudflare Access sent us to its login page"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,6 +246,9 @@ func TestExplainsCloudflareAccess(t *testing.T) {
 			_, err := Start(context.Background(), Options{File: file, Server: server.URL, Header: tt.header})
 			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), server.URL) {
 				t.Fatalf("err = %v", err)
+			}
+			if !errors.Is(err, ErrBehindAccess) {
+				t.Fatalf("err = %v, want ErrBehindAccess", err)
 			}
 		})
 	}
@@ -269,6 +273,60 @@ func TestWritesFinalStateOnStop(t *testing.T) {
 	}
 	if got := readFile(t, f.file); got != "ab" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestShowsHostAvatar(t *testing.T) {
+	relay := prototest.NewRelay(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "AAAAAAAAAAAAAAAAAAAAAA", "hostToken": "host-token"})
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "notes.md")
+	_ = os.WriteFile(file, []byte("x"), 0o644)
+	s, err := Start(context.Background(), Options{
+		File: file, Server: server.URL, Name: "kfly8", Avatar: "https://gravatar.com/avatar/x", Dial: relay.Dial,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	// Guests are turned away until the host is in the room.
+	prototest.WaitFor(t, wait, func() bool { return s.Client.Status() == protocol.StatusConnected }, "host connected")
+	g := joinAsGuest(t, relay, s.URL)
+	prototest.WaitFor(t, wait, func() bool {
+		for _, st := range g.aw.GetStates() {
+			user, _ := st.State["user"].(map[string]any)
+			if st.State["role"] == "host" && user["name"] == "kfly8" && user["avatar"] == "https://gravatar.com/avatar/x" {
+				return true
+			}
+		}
+		return false
+	}, "host avatar")
+}
+
+func TestDisplayName(t *testing.T) {
+	tests := []struct {
+		state map[string]any
+		want  string
+	}{
+		{map[string]any{"user": map[string]any{"name": " Alice "}}, "Alice"},
+		{map[string]any{"name": "kfly8"}, "kfly8"},
+		{map[string]any{"user": map[string]any{"name": ""}, "name": "bob"}, "bob"},
+		{map[string]any{"user": "x"}, "Someone"},
+		// Names reach the host's terminal: no escapes, cursor moves or bidi tricks.
+		{map[string]any{"user": map[string]any{"name": "\x1b[2J\x1b]0;pwned\x07Eve"}}, "[2J]0;pwnedEve"},
+		{map[string]any{"user": map[string]any{"name": "Eve\r\nMallory"}}, "EveMallory"},
+		{map[string]any{"user": map[string]any{"name": "\u202eevE"}}, "evE"},
+		{map[string]any{"user": map[string]any{"name": "\x1b\x07"}, "name": "bob"}, "bob"},
+		{map[string]any{"user": map[string]any{"name": strings.Repeat("あ", 50)}}, strings.Repeat("あ", 40) + "…"},
+		{map[string]any{}, "Someone"},
+	}
+	for _, tt := range tests {
+		if got := displayName(tt.state); got != tt.want {
+			t.Errorf("displayName(%v) = %q, want %q", tt.state, got, tt.want)
+		}
 	}
 }
 

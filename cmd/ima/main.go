@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,11 +14,12 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime/debug"
-	"sync"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/piconic-ai/ima/internal/access"
 	"github.com/piconic-ai/ima/internal/clipboard"
-	"github.com/piconic-ai/ima/internal/protocol"
 	"github.com/piconic-ai/ima/internal/session"
 	"golang.org/x/term"
 )
@@ -43,9 +46,9 @@ Share a local Markdown file and co-edit it with others in their browser.
 Edits are written back to the file. Press Ctrl+C to finish.
 
 Environment:
-  IMA_SERVER                ima server URL (default: ` + defaultServer + `)
-  IMA_ACCESS_CLIENT_ID      Cloudflare Access service token, for a server
-  IMA_ACCESS_CLIENT_SECRET  behind Cloudflare Access`
+  IMA_SERVER  ima server URL (default: ` + defaultServer + `)
+
+A server behind Cloudflare Access signs you in with cloudflared.`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -79,12 +82,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if server == "" {
 		server = defaultServer
 	}
-	header, err := accessHeader(os.Getenv)
-	if err != nil {
-		fmt.Fprintln(stderr, "ima:", err)
-		return 2
-	}
-	status := &statusLine{out: stdout, tty: isTerminal(stdout), status: protocol.StatusConnecting}
+	out := newUI(stdout, isTerminal(stdout), os.Getenv("NO_COLOR") != "")
 
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -95,31 +93,41 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cancel()
 	}()
 
-	s, err := session.Start(ctx, session.Options{
+	cloudflared := &access.Cloudflared{OnSignIn: func(url string) { out.signIn(hostOf(server), url) }}
+	signIn := func(ctx context.Context, app string) (string, error) {
+		token, err := withSignInLimit(ctx, signInLimit, app, cloudflared.Token)
+		out.endSignIn()
+		if err == nil {
+			out.signedIn(access.Email(token))
+		}
+		return token, err
+	}
+	s, err := start(ctx, signIn, session.Options{
 		File:     file,
 		Server:   server,
-		Header:   header,
 		Name:     username(),
 		Watch:    true,
-		OnStatus: status.setStatus,
-		OnPeers:  status.setPeers,
+		OnStatus: out.setStatus,
+		OnPeople: out.setPeople,
 		OnError: func(err error) {
 			if os.Getenv("IMA_DEBUG") != "" {
 				fmt.Fprintln(stderr, "\nima:", err)
 			}
 		},
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, errSignInCancelled):
+		out.signInCancelled()
+		return 130
+	case errors.Is(err, errSignInTimedOut):
+		out.signInTimedOut(signInLimit)
+		return 1
+	case err != nil:
 		fmt.Fprintln(stderr, "ima:", err)
 		return 1
 	}
 
-	copied := clipboard.Copy(s.URL)
-	fmt.Fprintf(stdout, "Sharing %s\n\n  %s\n\n", arg, s.URL)
-	if copied {
-		fmt.Fprint(stdout, "  (copied to clipboard)\n\n")
-	}
-	status.start()
+	out.sharing(arg, s.URL, clipboard.Copy(s.URL))
 
 	<-ctx.Done()
 	// A second signal gives up on saving.
@@ -127,81 +135,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		<-signals
 		os.Exit(130)
 	}()
-	status.stop()
-	fmt.Fprintln(stdout, "Saving and closing the room…")
+	out.stopLive()
+	out.saving(arg)
 	if err := s.Stop(); err != nil {
 		fmt.Fprintf(stderr, "ima: could not save %s: %v\n", arg, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Saved %s\n", arg)
+	out.saved(arg)
 	return 0
-}
-
-// statusLine shows the connection state and how many others are in the room.
-type statusLine struct {
-	out io.Writer
-	tty bool
-
-	mu      sync.Mutex
-	ready   bool
-	status  protocol.Status
-	peers   int
-	stopped bool
-}
-
-func (l *statusLine) setStatus(s protocol.Status) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.status = s
-	l.render()
-}
-
-func (l *statusLine) setPeers(n int) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if n == l.peers {
-		return
-	}
-	l.peers = n
-	l.render()
-}
-
-func (l *statusLine) start() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.ready = true
-	l.render()
-}
-
-func (l *statusLine) stop() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.stopped = true
-	if l.tty {
-		fmt.Fprintln(l.out)
-	}
-}
-
-func (l *statusLine) render() {
-	if !l.ready || l.stopped {
-		return
-	}
-	who := "waiting for others"
-	if l.peers == 1 {
-		who = "1 other here"
-	} else if l.peers > 1 {
-		who = fmt.Sprintf("%d others here", l.peers)
-	}
-	dot := "○"
-	if l.status == protocol.StatusConnected {
-		dot = "●"
-	}
-	line := fmt.Sprintf("%s %s · %s", dot, l.status, who)
-	if l.tty {
-		fmt.Fprintf(l.out, "\r\x1b[2K  %s", line)
-	} else {
-		fmt.Fprintln(l.out, line)
-	}
 }
 
 func isTerminal(w io.Writer) bool {
@@ -217,15 +158,64 @@ func username() string {
 	return u.Username
 }
 
-// accessHeader reads the Cloudflare Access service token to send to a server
-// behind Access.
-func accessHeader(getenv func(string) string) (http.Header, error) {
-	id, secret := getenv("IMA_ACCESS_CLIENT_ID"), getenv("IMA_ACCESS_CLIENT_SECRET")
-	if id == "" && secret == "" {
-		return nil, nil
+// signInLimit is how long ima waits for the user to sign in. cloudflared
+// cannot tell when the user clicks Deny, so without a limit ima would wait
+// for as long as cloudflared does.
+const signInLimit = 5 * time.Minute
+
+var (
+	errSignInCancelled = errors.New("sign-in cancelled")
+	errSignInTimedOut  = errors.New("sign-in timed out")
+)
+
+// withSignInLimit gets a token, giving up after limit. It tells the user
+// stopping (ctx cancelled) apart from running out of time.
+func withSignInLimit(ctx context.Context, limit time.Duration, app string, token func(context.Context, string) (string, error)) (string, error) {
+	limited, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	t, err := token(limited, app)
+	switch {
+	case err == nil:
+		return t, nil
+	case ctx.Err() != nil:
+		return "", errSignInCancelled
+	case errors.Is(err, context.DeadlineExceeded):
+		return "", errSignInTimedOut
+	default:
+		return "", err
 	}
-	if id == "" || secret == "" {
-		return nil, errors.New("set both IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET")
+}
+
+// start shares the file, signing in with Cloudflare Access when the server is
+// behind it.
+func start(ctx context.Context, signIn func(context.Context, string) (string, error), opts session.Options) (*session.Session, error) {
+	s, err := session.Start(ctx, opts)
+	if !errors.Is(err, session.ErrBehindAccess) {
+		return s, err
 	}
-	return http.Header{"Cf-Access-Client-Id": {id}, "Cf-Access-Client-Secret": {secret}}, nil
+	token, err := signIn(ctx, opts.Server)
+	if errors.Is(err, access.ErrNoCloudflared) {
+		return nil, fmt.Errorf("%s is behind Cloudflare Access. Install cloudflared to sign in (for example, brew install cloudflared) and run ima again", opts.Server)
+	}
+	if err != nil {
+		return nil, err
+	}
+	opts.Header = http.Header{access.Header: {token}}
+	if email := access.Email(token); email != "" {
+		opts.Avatar = gravatarURL(email)
+	}
+	s, err = session.Start(ctx, opts)
+	if errors.Is(err, session.ErrBehindAccess) {
+		// Signed in, yet turned away: the session was revoked, or this
+		// account is not allowed in. cloudflared keeps the token until it
+		// expires, so it has to be removed to sign in again.
+		return nil, fmt.Errorf("%s did not accept your sign-in. To sign in again, remove the saved sign-in (rm ~/.cloudflared/*-token) and run ima again. If it still fails, ask whoever runs the server to let you in", opts.Server)
+	}
+	return s, err
+}
+
+// gravatarURL matches the web editor's: 404 for unknown emails, so others see initials.
+func gravatarURL(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return "https://gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?s=64&d=404"
 }

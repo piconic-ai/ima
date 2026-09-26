@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/piconic-ai/ima/internal/filewriter"
@@ -24,20 +26,23 @@ import (
 type Options struct {
 	File string
 	// Server is the base URL of the ima server, e.g. https://ima.piconic.ai
-	Server     string
-	Name       string
+	Server string
+	Name   string
+	// Avatar is the URL of the host's picture, shown to the others.
+	Avatar     string
 	WriteDelay time.Duration
 	// Watch streams edits made to the file outside ima into the room.
 	Watch bool
-	// Header is sent with every request to the server, such as the service
-	// token of a server behind Cloudflare Access.
+	// Header is sent with every request to the server, such as the Cloudflare
+	// Access token of whoever signed in.
 	Header     http.Header
 	HTTPClient *http.Client
 	Dial       protocol.Dialer
 	OnStatus   func(protocol.Status)
-	// OnPeers is called with the number of other people in the room.
-	OnPeers func(int)
-	OnError func(error)
+	// OnPeople is called with the names of the other people in the room,
+	// sorted, whenever someone joins, leaves or renames.
+	OnPeople func([]string)
+	OnError  func(error)
 }
 
 type Session struct {
@@ -109,7 +114,11 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 	if name == "" {
 		name = "host"
 	}
-	aw.SetLocalState(map[string]any{"role": "host", "name": name, "file": filepath.Base(opts.File)})
+	user := map[string]any{"name": name}
+	if opts.Avatar != "" {
+		user["avatar"] = opts.Avatar
+	}
+	aw.SetLocalState(map[string]any{"role": "host", "name": name, "user": user, "file": filepath.Base(opts.File)})
 
 	s := &Session{
 		URL:       server + "/r/" + room.ID + "#" + key,
@@ -150,16 +159,17 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 		}
 	})
 	aw.OnChange(func(awareness.ChangeEvent) {
-		if opts.OnPeers == nil {
+		if opts.OnPeople == nil {
 			return
 		}
-		others := 0
-		for id := range aw.GetStates() {
+		var names []string
+		for id, st := range aw.GetStates() {
 			if id != aw.ClientID() {
-				others++
+				names = append(names, displayName(st.State))
 			}
 		}
-		opts.OnPeers(others)
+		sort.Strings(names)
+		opts.OnPeople(names)
 	})
 	s.stopAlive = keepAlive(aw)
 	s.Client.Connect()
@@ -172,6 +182,43 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 	}
 	return s, nil
 }
+
+// displayName reads a peer's name the way the web editor does: from
+// user.name (browsers) or name (older hosts).
+func displayName(state map[string]any) string {
+	user, _ := state["user"].(map[string]any)
+	for _, v := range []any{user["name"], state["name"]} {
+		name, _ := v.(string)
+		if name = cleanName(name); name != "" {
+			return name
+		}
+	}
+	return "Someone"
+}
+
+// maxNameLength matches the web editor's limit on names.
+const maxNameLength = 40
+
+// cleanName makes a name safe to print. Names come from other people's
+// browsers and end up on the host's terminal, so anything that could move
+// the cursor, start an escape sequence or reorder the text is dropped.
+func cleanName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	if r := []rune(name); len(r) > maxNameLength {
+		name = strings.TrimSpace(string(r[:maxNameLength])) + "…"
+	}
+	return name
+}
+
+// ErrBehindAccess means Cloudflare Access sent us to its login page: we sent
+// no credentials, or Access did not accept them.
+var ErrBehindAccess = errors.New("Cloudflare Access sent us to its login page")
 
 type room struct {
 	ID        string `json:"id"`
@@ -196,10 +243,7 @@ func createRoom(ctx context.Context, client *http.Client, server string, header 
 	defer res.Body.Close()
 	// Cloudflare Access answers requests it does not let through with its login page.
 	if strings.HasPrefix(res.Request.URL.Path, "/cdn-cgi/access/") {
-		if header.Get("CF-Access-Client-Id") != "" {
-			return nil, fmt.Errorf("failed to create a room: %s is behind Cloudflare Access and did not accept the service token in IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET", server)
-		}
-		return nil, fmt.Errorf("failed to create a room: %s is behind Cloudflare Access; set IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET to a service token", server)
+		return nil, fmt.Errorf("failed to create a room on %s: %w", server, ErrBehindAccess)
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return nil, fmt.Errorf("failed to create a room on %s: %s", server, res.Status)
