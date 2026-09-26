@@ -12,6 +12,7 @@ import { resolveLanguage } from './language.ts'
 import { PreviewPane } from './pane.ts'
 import { colorFor, parseRoomLocation, participants, roomSocketUrl } from './room.ts'
 import { createSettings } from './settings.ts'
+import { Splitter } from './splitter.ts'
 import { NARROW_QUERY, type ViewMode, ViewSwitch } from './view.ts'
 import { loadVimMode, VimToggle, vimExtension } from './vim.ts'
 import './style.css'
@@ -157,7 +158,8 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
     if (main.dataset.view === 'split') preview.follow(editor)
   }
   const preview = new PreviewPane(text, { onRender: followEditor })
-  main.append(preview.element)
+  const splitter = new Splitter(main, { onResize: followEditor })
+  main.append(splitter.element, preview.element)
   let following = 0
   editor.scrollDOM.addEventListener('scroll', () => {
     following ||= requestAnimationFrame(() => {

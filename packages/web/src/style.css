@@ -274,6 +274,35 @@ main.editor[data-view="editor"] .preview {
 main.editor[data-view="split"] .preview {
   border-left: 1px solid var(--line);
 }
+main.editor[data-view="split"] .source {
+  flex: 0 0 var(--split, 50%);
+}
+.splitter {
+  display: none;
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: 8px;
+  margin: 0 -4px;
+  cursor: col-resize;
+  touch-action: none;
+}
+main.editor[data-view="split"] .splitter {
+  display: block;
+}
+.splitter:hover,
+.splitter:focus-visible,
+main.editor[data-resizing] .splitter {
+  outline: none;
+  background: linear-gradient(var(--accent), var(--accent)) center / 2px 100% no-repeat;
+}
+main.editor[data-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+main.editor[data-resizing] iframe {
+  pointer-events: none;
+}
 
 /* Follows GitHub's Markdown styles (github-markdown-css) so documents look as they do there. */
 .preview {
