@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/piconic-ai/ima/internal/protocol"
 )
@@ -19,24 +18,18 @@ type ui struct {
 	out   io.Writer
 	tty   bool
 	color bool
-	// width is the terminal's width in columns, or 0 if unknown.
-	width func() int
 
 	mu       sync.Mutex
 	live     bool
 	status   protocol.Status
 	people   []string
 	lastLine string
-	// signInRows is how many terminal rows the sign-in block takes, so it can
-	// be cleared once signed in.
-	signInRows int
+	// signingIn is set while the sign-in block is on the alternate screen.
+	signingIn bool
 }
 
-func newUI(out io.Writer, tty, noColor bool, width func() int) *ui {
-	if width == nil {
-		width = func() int { return 0 }
-	}
-	return &ui{out: out, tty: tty, color: tty && !noColor, width: width, status: protocol.StatusConnecting}
+func newUI(out io.Writer, tty, noColor bool) *ui {
+	return &ui{out: out, tty: tty, color: tty && !noColor, status: protocol.StatusConnecting}
 }
 
 func (u *ui) paint(code, s string) string {
@@ -64,52 +57,42 @@ func (u *ui) print(lines ...string) {
 	}
 }
 
-// signIn is shown while the browser is open to sign in.
+// signIn is shown while the browser is open to sign in. On a terminal it
+// goes on the alternate screen, like less or vim, so that endSignIn brings
+// back the screen as it was: nothing to count or erase, whatever the user
+// types or however they resize the window meanwhile.
 func (u *ui) signIn(host, url string) {
-	lines := []string{
+	u.mu.Lock()
+	if u.tty && !u.signingIn {
+		fmt.Fprint(u.out, "\x1b[?1049h\x1b[H")
+		u.signingIn = true
+	}
+	u.mu.Unlock()
+	u.print(
 		"",
-		"Sign in to " + host,
+		u.bold("Sign in to "+host),
 		"Your browser opened. Sign in there, then come back here.",
 		"",
-		"If it did not open, use this link:",
-		url,
-	}
-	u.print("", u.bold(lines[1]), lines[2], "", u.dim(lines[4]), u.dim(lines[5]))
-
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.signInRows = rows(lines, u.width())
+		u.dim("If it did not open, use this link:"),
+		u.dim(url),
+	)
 }
 
-// signedIn replaces the sign-in block, which is no longer needed.
-func (u *ui) signedIn(email string) {
+// endSignIn leaves the alternate screen, if signIn went there. Call it
+// whether or not signing in worked, before printing anything else.
+func (u *ui) endSignIn() {
 	u.mu.Lock()
-	if u.tty && u.signInRows > 0 {
-		// Up to where the block started, then clear to the end of the screen.
-		fmt.Fprintf(u.out, "\x1b[%dA\r\x1b[J", u.signInRows)
+	defer u.mu.Unlock()
+	if u.signingIn {
+		fmt.Fprint(u.out, "\x1b[?1049l")
+		u.signingIn = false
 	}
-	u.signInRows = 0
-	u.mu.Unlock()
+}
+
+func (u *ui) signedIn(email string) {
 	if email != "" {
 		u.print("", u.green("✓")+" Signed in as "+email)
 	}
-}
-
-// rows counts the terminal rows lines take once indented and wrapped at
-// width columns. Lines are plain text; every character is one column wide.
-func rows(lines []string, width int) int {
-	n := 0
-	for _, line := range lines {
-		if line != "" {
-			line = "  " + line
-		}
-		if l := utf8.RuneCountInString(line); width > 0 && l > width {
-			n += (l + width - 1) / width
-		} else {
-			n++
-		}
-	}
-	return n
 }
 
 // sharing shows the link to send, then starts the live line.
