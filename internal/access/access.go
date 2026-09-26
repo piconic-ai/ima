@@ -78,6 +78,10 @@ func (c *Cloudflared) Token(ctx context.Context, app string) (string, error) {
 		}
 	}}
 	if err := run(ctx, out, out, "access", "login", "--quiet", app); err != nil {
+		// Stopped by the caller (Ctrl+C or a time limit), not a failed sign-in.
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		if msg := strings.TrimSpace(out.all.String()); msg != "" {
 			return "", fmt.Errorf("could not sign in to %s: %w\n%s", app, err, msg)
 		}

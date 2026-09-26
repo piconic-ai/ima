@@ -114,6 +114,30 @@ func TestTokenReportsFailedSignIn(t *testing.T) {
 	}
 }
 
+// When the caller stops waiting (Ctrl+C or a time limit), cloudflared is
+// killed, and Token reports why rather than a failed sign-in.
+func TestTokenReportsCallerStoppingSignIn(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	timedOut, cancelTimeout := context.WithTimeout(context.Background(), 0)
+	defer cancelTimeout()
+
+	// Like exec.CommandContext: cloudflared is killed once ctx is done.
+	run := func(ctx context.Context, _, _ io.Writer, args ...string) error {
+		if args[1] == "token" {
+			return errors.New("exit status 1")
+		}
+		<-ctx.Done()
+		return errors.New("signal: killed")
+	}
+	for ctx, want := range map[context.Context]error{cancelled: context.Canceled, timedOut: context.DeadlineExceeded} {
+		_, err := (&Cloudflared{Run: run}).Token(ctx, "https://ima.example.com")
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
+		}
+	}
+}
+
 func TestTokenWithoutCloudflared(t *testing.T) {
 	run := func(context.Context, io.Writer, io.Writer, ...string) error { return ErrNoCloudflared }
 	_, err := (&Cloudflared{Run: run}).Token(context.Background(), "https://ima.example.com")

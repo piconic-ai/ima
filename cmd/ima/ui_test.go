@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/piconic-ai/ima/internal/protocol"
 )
@@ -30,6 +31,8 @@ func TestUIWithoutTerminal(t *testing.T) {
 
   If it did not open, use this link:
   https://ima.example.com/cdn-cgi/access/cli?token=abc
+
+  Clicked Deny, or changed your mind? Press Ctrl+C to stop.
 
   ✓ Signed in as k@example.com
 
@@ -128,6 +131,31 @@ func TestUIKeepsSignInWithoutTerminal(t *testing.T) {
 	u.signedIn("")
 	if got := out.String(); strings.Contains(got, "\x1b[") || !strings.Contains(got, "Sign in to ima.example.com") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUIWhenSignInStops(t *testing.T) {
+	var out strings.Builder
+	u := newUI(&out, false, false)
+	u.signInCancelled()
+	u.signInTimedOut(5 * time.Minute)
+	want := `
+  Sign-in cancelled. Nothing was shared.
+
+
+  Sign-in did not finish in 5 minutes. Run ima again to try again.
+
+`
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
+func TestMinutes(t *testing.T) {
+	for d, want := range map[time.Duration]string{time.Minute: "1 minute", 5 * time.Minute: "5 minutes"} {
+		if got := minutes(d); got != want {
+			t.Errorf("minutes(%v) = %q, want %q", d, got, want)
+		}
 	}
 }
 

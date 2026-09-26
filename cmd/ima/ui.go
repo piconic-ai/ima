@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/piconic-ai/ima/internal/protocol"
 )
@@ -75,7 +76,26 @@ func (u *ui) signIn(host, url string) {
 		"",
 		u.dim("If it did not open, use this link:"),
 		u.dim(url),
+		"",
+		"Clicked Deny, or changed your mind? Press Ctrl+C to stop.",
 	)
+}
+
+// signInCancelled is shown when the user stopped signing in with Ctrl+C.
+func (u *ui) signInCancelled() {
+	u.print("", "Sign-in cancelled. Nothing was shared.", "")
+}
+
+// signInTimedOut is shown when signing in took longer than limit.
+func (u *ui) signInTimedOut(limit time.Duration) {
+	u.print("", u.yellow("Sign-in did not finish in "+minutes(limit)+".")+" Run ima again to try again.", "")
+}
+
+func minutes(d time.Duration) string {
+	if m := int(d.Minutes()); m != 1 {
+		return fmt.Sprintf("%d minutes", m)
+	}
+	return "1 minute"
 }
 
 // endSignIn leaves the alternate screen, if signIn went there. Call it

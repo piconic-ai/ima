@@ -16,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/piconic-ai/ima/internal/access"
 	"github.com/piconic-ai/ima/internal/clipboard"
@@ -94,7 +95,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	cloudflared := &access.Cloudflared{OnSignIn: func(url string) { out.signIn(hostOf(server), url) }}
 	signIn := func(ctx context.Context, app string) (string, error) {
-		token, err := cloudflared.Token(ctx, app)
+		token, err := withSignInLimit(ctx, signInLimit, app, cloudflared.Token)
 		out.endSignIn()
 		if err == nil {
 			out.signedIn(access.Email(token))
@@ -114,7 +115,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 		},
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, errSignInCancelled):
+		out.signInCancelled()
+		return 130
+	case errors.Is(err, errSignInTimedOut):
+		out.signInTimedOut(signInLimit)
+		return 1
+	case err != nil:
 		fmt.Fprintln(stderr, "ima:", err)
 		return 1
 	}
@@ -148,6 +156,34 @@ func username() string {
 		return ""
 	}
 	return u.Username
+}
+
+// signInLimit is how long ima waits for the user to sign in. cloudflared
+// cannot tell when the user clicks Deny, so without a limit ima would wait
+// for as long as cloudflared does.
+const signInLimit = 5 * time.Minute
+
+var (
+	errSignInCancelled = errors.New("sign-in cancelled")
+	errSignInTimedOut  = errors.New("sign-in timed out")
+)
+
+// withSignInLimit gets a token, giving up after limit. It tells the user
+// stopping (ctx cancelled) apart from running out of time.
+func withSignInLimit(ctx context.Context, limit time.Duration, app string, token func(context.Context, string) (string, error)) (string, error) {
+	limited, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	t, err := token(limited, app)
+	switch {
+	case err == nil:
+		return t, nil
+	case ctx.Err() != nil:
+		return "", errSignInCancelled
+	case errors.Is(err, context.DeadlineExceeded):
+		return "", errSignInTimedOut
+	default:
+		return "", err
+	}
 }
 
 // start shares the file, signing in with Cloudflare Access when the server is

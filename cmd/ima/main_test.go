@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/piconic-ai/ima/internal/access"
 	"github.com/piconic-ai/ima/internal/session"
@@ -122,4 +124,38 @@ func TestGravatarURL(t *testing.T) {
 	if got := gravatarURL(" Test@Example.com "); got != want {
 		t.Fatalf("gravatarURL = %q", got)
 	}
+}
+
+func TestWithSignInLimit(t *testing.T) {
+	// Waits like cloudflared does for someone who clicked Deny.
+	waitForever := func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	t.Run("signed in", func(t *testing.T) {
+		got, err := withSignInLimit(context.Background(), time.Minute, "https://ima.example.com", func(context.Context, string) (string, error) { return userToken, nil })
+		if err != nil || got != userToken {
+			t.Fatalf("= %q, %v", got, err)
+		}
+	})
+	t.Run("cancelled with Ctrl+C", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(10*time.Millisecond, cancel)
+		if _, err := withSignInLimit(ctx, time.Minute, "https://ima.example.com", waitForever); !errors.Is(err, errSignInCancelled) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("out of time", func(t *testing.T) {
+		if _, err := withSignInLimit(context.Background(), 10*time.Millisecond, "https://ima.example.com", waitForever); !errors.Is(err, errSignInTimedOut) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("failed", func(t *testing.T) {
+		failed := errors.New("could not sign in")
+		fail := func(context.Context, string) (string, error) { return "", failed }
+		if _, err := withSignInLimit(context.Background(), time.Minute, "https://ima.example.com", fail); !errors.Is(err, failed) {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }
