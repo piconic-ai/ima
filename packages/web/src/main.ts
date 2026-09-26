@@ -6,24 +6,16 @@ import { basicSetup } from 'codemirror'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
+import { h } from './dom.ts'
 import { avatarFor, fetchIdentity, initials } from './identity.ts'
 import { resolveLanguage } from './language.ts'
 import { colorFor, parseRoomLocation, participants, roomSocketUrl } from './room.ts'
+import { createSettings } from './settings.ts'
 import { loadVimMode, VimToggle, vimExtension } from './vim.ts'
 import './style.css'
 
 const NAME_KEY = 'ima:name'
 const app = document.getElementById('app') as HTMLElement
-
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  props: Partial<HTMLElementTagNameMap[K]> = {},
-  children: (Node | string)[] = [],
-): HTMLElementTagNameMap[K] {
-  const el = Object.assign(document.createElement(tag), props)
-  el.append(...children)
-  return el
-}
 
 function loadName(): string | null {
   try {
@@ -112,12 +104,7 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
     }),
     reconnect,
   ])
-  const vimButton = h('button', {
-    type: 'button',
-    className: 'toggle',
-    textContent: 'Vim',
-    title: 'Vim keybindings',
-  })
+  const settings = createSettings()
   const main = h('main', { className: 'editor' })
   app.replaceChildren(
     h('header', {}, [
@@ -125,8 +112,9 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
       file,
       status,
       people,
-      vimButton,
+      settings.button,
     ]),
+    settings.panel,
     banner,
     main,
   )
@@ -155,15 +143,16 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
 
   const vim = new VimToggle(editor, vimMode, () => vimExtension(undoManager))
   const setVim = async (on: boolean) => {
-    vimButton.ariaPressed = String(on)
-    if (!(await vim.set(on))) vimButton.ariaPressed = String(vim.on)
+    if (!(await vim.set(on))) vimToggle.set(vim.on)
   }
-  vimButton.ariaPressed = 'false'
-  vimButton.addEventListener('click', () => {
-    void setVim(!vim.on)
-    editor.focus()
+  const vimOn = loadVimMode()
+  const vimToggle = settings.addToggle({
+    label: 'Vim keybindings',
+    hint: 'Only in this browser.',
+    checked: vimOn,
+    onChange: (on) => void setVim(on),
   })
-  if (loadVimMode()) void setVim(true)
+  if (vimOn) void setVim(true)
 
   const setStatus = (s: RoomStatus) => {
     status.dataset.status = s
