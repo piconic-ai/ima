@@ -8,7 +8,7 @@ ima notes.md
 
 `ima` prints a link (and copies it to your clipboard). Paste it into Slack or wherever; whoever opens it edits the file with you in their browser. No install or account for them. Edits land in your local file about a second later. Press Ctrl+C to finish: the final state is written and the room closes.
 
-Any UTF-8 text file works, not only Markdown: `ima main.go`, `ima data.csv` or `ima board.canvas`. The editor picks syntax highlighting from the file extension and falls back to Markdown when there is none or it is unknown.
+Any UTF-8 text file works, not only Markdown: `ima main.go`, `ima data.csv` or `ima board.canvas`. The editor picks syntax highlighting from the file extension and falls back to Markdown when there is none or it is unknown; `.txt`, `.csv` and `.tsv` stay plain text.
 
 **Why "ima"?** It comes from two Japanese words read *ima*: 居間 (the living room, where you casually invite people in) and 今 (now). You invite people into your place to write together, right now, and the document never leaves your home.
 

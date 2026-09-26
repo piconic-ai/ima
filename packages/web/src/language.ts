@@ -17,6 +17,8 @@ const overrides = new Map<string, string | null>([
   // Tables get their own view later; highlighting would only add noise.
   ['csv', null],
   ['tsv', null],
+  // Not in language-data, so it would otherwise fall back to Markdown.
+  ['txt', null],
 ])
 
 function byName(name: string): LanguageDescription | null {

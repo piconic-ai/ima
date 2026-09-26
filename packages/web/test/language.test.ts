@@ -11,6 +11,7 @@ describe('resolveLanguage', () => {
     ['NOTES.MD', 'markdown'],
     ['data.csv', 'plain'],
     ['data.tsv', 'plain'],
+    ['notes.txt', 'plain'],
     ['board.canvas', 'JSON'],
     ['main.go', 'Go'],
     ['Main.GO', 'Go'],
