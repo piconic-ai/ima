@@ -39,22 +39,6 @@ func TestRunArgs(t *testing.T) {
 	}
 }
 
-func TestStatusLine(t *testing.T) {
-	var out strings.Builder
-	l := &statusLine{out: &out, status: "connecting"}
-	l.setStatus("connected") // not shown before start
-	l.start()
-	l.setPeers(1)
-	l.setPeers(1) // unchanged
-	l.setPeers(2)
-	l.stop()
-	l.setPeers(0) // not shown after stop
-	want := "● connected · waiting for others\n● connected · 1 other here\n● connected · 2 others here\n"
-	if out.String() != want {
-		t.Fatalf("got %q", out.String())
-	}
-}
-
 func TestAccessHeader(t *testing.T) {
 	tests := []struct {
 		env     map[string]string

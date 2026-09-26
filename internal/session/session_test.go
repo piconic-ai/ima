@@ -293,6 +293,8 @@ func TestShowsHostAvatar(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Stop()
+	// Guests are turned away until the host is in the room.
+	prototest.WaitFor(t, wait, func() bool { return s.Client.Status() == protocol.StatusConnected }, "host connected")
 	g := joinAsGuest(t, relay, s.URL)
 	prototest.WaitFor(t, wait, func() bool {
 		for _, st := range g.aw.GetStates() {
@@ -303,6 +305,24 @@ func TestShowsHostAvatar(t *testing.T) {
 		}
 		return false
 	}, "host avatar")
+}
+
+func TestDisplayName(t *testing.T) {
+	tests := []struct {
+		state map[string]any
+		want  string
+	}{
+		{map[string]any{"user": map[string]any{"name": " Alice "}}, "Alice"},
+		{map[string]any{"name": "kfly8"}, "kfly8"},
+		{map[string]any{"user": map[string]any{"name": ""}, "name": "bob"}, "bob"},
+		{map[string]any{"user": "x"}, "Someone"},
+		{map[string]any{}, "Someone"},
+	}
+	for _, tt := range tests {
+		if got := displayName(tt.state); got != tt.want {
+			t.Errorf("displayName(%v) = %q, want %q", tt.state, got, tt.want)
+		}
+	}
 }
 
 func TestAnnouncesItselfAsHost(t *testing.T) {

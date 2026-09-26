@@ -15,12 +15,10 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/piconic-ai/ima/internal/access"
 	"github.com/piconic-ai/ima/internal/clipboard"
-	"github.com/piconic-ai/ima/internal/protocol"
 	"github.com/piconic-ai/ima/internal/session"
 	"golang.org/x/term"
 )
@@ -91,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ima:", err)
 		return 2
 	}
-	status := &statusLine{out: stdout, tty: isTerminal(stdout), status: protocol.StatusConnecting}
+	out := newUI(stdout, isTerminal(stdout), os.Getenv("NO_COLOR") != "")
 
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -102,15 +100,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cancel()
 	}()
 
-	cloudflared := &access.Cloudflared{Progress: stderr}
-	s, err := start(ctx, cloudflared.Token, session.Options{
+	cloudflared := &access.Cloudflared{OnSignIn: func(url string) { out.signIn(hostOf(server), url) }}
+	signIn := func(ctx context.Context, app string) (string, error) {
+		token, err := cloudflared.Token(ctx, app)
+		if err == nil {
+			out.signedIn(access.Email(token))
+		}
+		return token, err
+	}
+	s, err := start(ctx, signIn, session.Options{
 		File:     file,
 		Server:   server,
 		Header:   header,
 		Name:     username(),
 		Watch:    true,
-		OnStatus: status.setStatus,
-		OnPeers:  status.setPeers,
+		OnStatus: out.setStatus,
+		OnPeople: out.setPeople,
 		OnError: func(err error) {
 			if os.Getenv("IMA_DEBUG") != "" {
 				fmt.Fprintln(stderr, "\nima:", err)
@@ -122,12 +127,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	copied := clipboard.Copy(s.URL)
-	fmt.Fprintf(stdout, "Sharing %s\n\n  %s\n\n", arg, s.URL)
-	if copied {
-		fmt.Fprint(stdout, "  (copied to clipboard)\n\n")
-	}
-	status.start()
+	out.sharing(arg, s.URL, clipboard.Copy(s.URL))
 
 	<-ctx.Done()
 	// A second signal gives up on saving.
@@ -135,81 +135,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		<-signals
 		os.Exit(130)
 	}()
-	status.stop()
-	fmt.Fprintln(stdout, "Saving and closing the room…")
+	out.stopLive()
+	out.saving(arg)
 	if err := s.Stop(); err != nil {
 		fmt.Fprintf(stderr, "ima: could not save %s: %v\n", arg, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Saved %s\n", arg)
+	out.saved(arg)
 	return 0
-}
-
-// statusLine shows the connection state and how many others are in the room.
-type statusLine struct {
-	out io.Writer
-	tty bool
-
-	mu      sync.Mutex
-	ready   bool
-	status  protocol.Status
-	peers   int
-	stopped bool
-}
-
-func (l *statusLine) setStatus(s protocol.Status) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.status = s
-	l.render()
-}
-
-func (l *statusLine) setPeers(n int) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if n == l.peers {
-		return
-	}
-	l.peers = n
-	l.render()
-}
-
-func (l *statusLine) start() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.ready = true
-	l.render()
-}
-
-func (l *statusLine) stop() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.stopped = true
-	if l.tty {
-		fmt.Fprintln(l.out)
-	}
-}
-
-func (l *statusLine) render() {
-	if !l.ready || l.stopped {
-		return
-	}
-	who := "waiting for others"
-	if l.peers == 1 {
-		who = "1 other here"
-	} else if l.peers > 1 {
-		who = fmt.Sprintf("%d others here", l.peers)
-	}
-	dot := "○"
-	if l.status == protocol.StatusConnected {
-		dot = "●"
-	}
-	line := fmt.Sprintf("%s %s · %s", dot, l.status, who)
-	if l.tty {
-		fmt.Fprintf(l.out, "\r\x1b[2K  %s", line)
-	} else {
-		fmt.Fprintln(l.out, line)
-	}
 }
 
 func isTerminal(w io.Writer) bool {

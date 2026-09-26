@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,9 +38,10 @@ type Options struct {
 	HTTPClient *http.Client
 	Dial       protocol.Dialer
 	OnStatus   func(protocol.Status)
-	// OnPeers is called with the number of other people in the room.
-	OnPeers func(int)
-	OnError func(error)
+	// OnPeople is called with the names of the other people in the room,
+	// sorted, whenever someone joins, leaves or renames.
+	OnPeople func([]string)
+	OnError  func(error)
 }
 
 type Session struct {
@@ -156,16 +158,17 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 		}
 	})
 	aw.OnChange(func(awareness.ChangeEvent) {
-		if opts.OnPeers == nil {
+		if opts.OnPeople == nil {
 			return
 		}
-		others := 0
-		for id := range aw.GetStates() {
+		var names []string
+		for id, st := range aw.GetStates() {
 			if id != aw.ClientID() {
-				others++
+				names = append(names, displayName(st.State))
 			}
 		}
-		opts.OnPeers(others)
+		sort.Strings(names)
+		opts.OnPeople(names)
 	})
 	s.stopAlive = keepAlive(aw)
 	s.Client.Connect()
@@ -177,6 +180,19 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 		}
 	}
 	return s, nil
+}
+
+// displayName reads a peer's name the way the web editor does: from
+// user.name (browsers) or name (older hosts).
+func displayName(state map[string]any) string {
+	user, _ := state["user"].(map[string]any)
+	if name, _ := user["name"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	if name, _ := state["name"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	return "Someone"
 }
 
 // ErrBehindAccess means Cloudflare Access sent us to its login page.

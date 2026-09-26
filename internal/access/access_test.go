@@ -1,7 +1,6 @@
 package access
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -37,7 +36,9 @@ func (f *fakeCloudflared) run(_ context.Context, stdout, stderr io.Writer, args 
 		}
 		fmt.Fprintln(stdout, f.token)
 	case "login":
-		fmt.Fprintln(stderr, "A browser window should have opened at the following URL:")
+		// Like cloudflared, in pieces.
+		fmt.Fprint(stderr, "A browser window should have opened at the following URL:\n\nhttps://ima.example.com/cdn-cgi/")
+		fmt.Fprint(stderr, "access/cli?token=abc\n\nIf the browser failed to open, please visit the URL above directly in your browser.\n")
 		if f.loginErr != nil {
 			return f.loginErr
 		}
@@ -67,8 +68,8 @@ func TestTokenSignsInWhenNeeded(t *testing.T) {
 		"not a JWT":       {token: "garbage", login: fresh},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var progress bytes.Buffer
-			c := &Cloudflared{Run: f.run, Now: func() time.Time { return now }, Progress: &progress}
+			var urls []string
+			c := &Cloudflared{Run: f.run, Now: func() time.Time { return now }, OnSignIn: func(u string) { urls = append(urls, u) }}
 			got, err := c.Token(context.Background(), "https://ima.example.com")
 			if err != nil || got != fresh {
 				t.Fatalf("Token = %q, %v", got, err)
@@ -76,9 +77,8 @@ func TestTokenSignsInWhenNeeded(t *testing.T) {
 			if !strings.Contains(fmt.Sprint(f.calls), "access login --quiet --auto-close https://ima.example.com") {
 				t.Fatalf("calls = %q", f.calls)
 			}
-			// The user sees where to sign in, but never the token.
-			if !strings.Contains(progress.String(), "browser window") || strings.Contains(progress.String(), fresh) {
-				t.Fatalf("progress = %q", progress.String())
+			if want := []string{"https://ima.example.com/cdn-cgi/access/cli?token=abc"}; fmt.Sprint(urls) != fmt.Sprint(want) {
+				t.Fatalf("sign-in URLs = %q", urls)
 			}
 		})
 	}
@@ -87,7 +87,8 @@ func TestTokenSignsInWhenNeeded(t *testing.T) {
 func TestTokenReportsFailedSignIn(t *testing.T) {
 	f := &fakeCloudflared{loginErr: errors.New("exit status 1")}
 	_, err := (&Cloudflared{Run: f.run, Now: func() time.Time { return now }}).Token(context.Background(), "https://ima.example.com")
-	if err == nil || !strings.Contains(err.Error(), "could not sign in to https://ima.example.com") {
+	// cloudflared's output explains what went wrong.
+	if err == nil || !strings.Contains(err.Error(), "could not sign in to https://ima.example.com") || !strings.Contains(err.Error(), "browser failed to open") {
 		t.Fatalf("err = %v", err)
 	}
 }

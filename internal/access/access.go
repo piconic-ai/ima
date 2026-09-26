@@ -12,6 +12,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,9 +26,9 @@ var ErrNoCloudflared = errors.New("cloudflared is not installed")
 // browser when there is no valid token yet. cloudflared keeps the token, so
 // the browser opens only once per Access session.
 type Cloudflared struct {
-	// Progress receives what cloudflared prints while signing in, such as the
-	// URL to open when the browser does not open by itself.
-	Progress io.Writer
+	// OnSignIn is called when the browser opens to sign in, with the URL to
+	// open by hand in case it did not. cloudflared's own output is not shown.
+	OnSignIn func(url string)
 	// Run runs cloudflared. Tests replace it.
 	Run func(ctx context.Context, stdout, stderr io.Writer, args ...string) error
 	Now func() time.Time
@@ -53,10 +54,6 @@ func (c *Cloudflared) Token(ctx context.Context, app string) (string, error) {
 	if c.Now != nil {
 		now = c.Now
 	}
-	progress := c.Progress
-	if progress == nil {
-		progress = io.Discard
-	}
 
 	cached := func() (string, error) {
 		var out bytes.Buffer
@@ -72,16 +69,47 @@ func (c *Cloudflared) Token(ctx context.Context, app string) (string, error) {
 		return token, nil
 	}
 
-	fmt.Fprintf(progress, "%s is behind Cloudflare Access. Signing in with cloudflared…\n", app)
-	// --quiet keeps the token itself off the terminal.
-	if err := run(ctx, progress, progress, "access", "login", "--quiet", "--auto-close", app); err != nil {
-		return "", fmt.Errorf("cloudflared could not sign in to %s: %w", app, err)
+	// --quiet keeps the token itself out of the output.
+	out := &lineWatcher{onLine: func(line string) {
+		if c.OnSignIn != nil && strings.HasPrefix(line, "https://") && strings.Contains(line, "/cdn-cgi/access/cli") {
+			c.OnSignIn(line)
+		}
+	}}
+	if err := run(ctx, out, out, "access", "login", "--quiet", "--auto-close", app); err != nil {
+		if msg := strings.TrimSpace(out.all.String()); msg != "" {
+			return "", fmt.Errorf("could not sign in to %s: %w\n%s", app, err, msg)
+		}
+		return "", fmt.Errorf("could not sign in to %s: %w", app, err)
 	}
 	token, err := cached()
 	if err != nil || !usable(token, now()) {
 		return "", fmt.Errorf("cloudflared signed in to %s but returned no usable token", app)
 	}
 	return token, nil
+}
+
+// lineWatcher keeps what cloudflared prints and calls onLine as each line
+// arrives, so the sign-in URL shows up while cloudflared waits for the browser.
+type lineWatcher struct {
+	mu     sync.Mutex
+	all    bytes.Buffer
+	line   []byte
+	onLine func(string)
+}
+
+func (w *lineWatcher) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.all.Write(p)
+	for _, b := range p {
+		if b != '\n' {
+			w.line = append(w.line, b)
+			continue
+		}
+		w.onLine(strings.TrimSpace(string(w.line)))
+		w.line = w.line[:0]
+	}
+	return len(p), nil
 }
 
 type claims struct {
