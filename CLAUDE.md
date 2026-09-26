@@ -1,6 +1,6 @@
 # ima
 
-A CLI that lets you co-edit a local Markdown file with other people, right now.
+A CLI that lets you co-edit a local text file with other people, right now.
 `ima <file>` prints a URL; others join from their browser.
 The name comes from the Japanese 居間 (living room) and 今 (now).
 
@@ -8,7 +8,7 @@ The name comes from the Japanese 居間 (living room) and 今 (now).
 - The host's local file is the source of truth. The server never stores content.
 - Updates are end-to-end encrypted with a key held in the URL fragment; the server only relays ciphertext.
 - Never send the key to the server (not in requests, logs, or error reports).
-- The minimal version only co-edits a single Markdown file. No auth, comments, or AI features.
+- The minimal version only co-edits a single text file. No auth, comments, or AI features.
 
 ## Layout
 - cmd/ima, internal/: the `ima` command (Go, single binary). internal/protocol mirrors packages/protocol on top of reearth/ygo; keep the wire format in sync

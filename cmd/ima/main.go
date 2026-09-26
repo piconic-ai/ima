@@ -1,4 +1,4 @@
-// Command ima shares a local Markdown file and co-edits it with others in their browser.
+// Command ima shares a local text file and co-edits it with others in their browser.
 package main
 
 import (
@@ -42,7 +42,7 @@ const defaultServer = "https://ima.piconic.ai"
 
 const usage = `Usage: ima <file>
 
-Share a local Markdown file and co-edit it with others in their browser.
+Share a local text file and co-edit it with others in their browser.
 Edits are written back to the file. Press Ctrl+C to finish.
 
 Environment:
