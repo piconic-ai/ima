@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { Compartment, type Extension, Prec } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
-import { getCM, Vim } from '@replit/codemirror-vim'
+import { type CodeMirrorV, getCM, Vim } from '@replit/codemirror-vim'
 import { basicSetup } from 'codemirror'
 import { afterEach, describe, expect, it } from 'vitest'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
@@ -128,26 +128,44 @@ describe('VimToggle', () => {
   })
 })
 
+// Vim on, with a local edit made in the editor and a remote one arrived through Yjs.
+async function withLocalAndRemoteEdit() {
+  const { doc, text, undoManager, vimMode, view } = setup('')
+  await new VimToggle(view, vimMode, () => vimExtension(undoManager), memoryStore()).set(true)
+  const cm = getCM(view) as CodeMirrorV | null
+  if (!cm) throw new Error('Vim is not active')
+
+  view.dispatch({ changes: { from: 0, insert: 'mine ' } })
+  const remote = new Y.Doc()
+  Y.applyUpdate(remote, Y.encodeStateAsUpdate(doc))
+  remote.getText('content').insert(5, 'theirs')
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote, Y.encodeStateVector(doc)), 'remote')
+  expect(text.toString()).toBe('mine theirs')
+  return { cm, text, view }
+}
+
 describe('vimExtension', () => {
   it('undoes and redoes with the shared UndoManager, leaving remote edits alone', async () => {
-    const { doc, text, undoManager, vimMode, view } = setup('')
-    await new VimToggle(view, vimMode, () => vimExtension(undoManager), memoryStore()).set(true)
-    const cm = getCM(view)
-    if (!cm) throw new Error('Vim is not active')
-
-    // A local edit goes through the editor, a remote one arrives through Yjs.
-    view.dispatch({ changes: { from: 0, insert: 'mine ' } })
-    const remote = new Y.Doc()
-    Y.applyUpdate(remote, Y.encodeStateAsUpdate(doc))
-    remote.getText('content').insert(5, 'theirs')
-    Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote, Y.encodeStateVector(doc)), 'remote')
-    expect(text.toString()).toBe('mine theirs')
+    const { cm, text, view } = await withLocalAndRemoteEdit()
 
     Vim.handleKey(cm, 'u', 'user')
     expect(text.toString()).toBe('theirs')
     expect(view.state.doc.toString()).toBe('theirs')
 
     Vim.handleKey(cm, '<C-r>', 'user')
+    expect(text.toString()).toBe('mine theirs')
+  })
+
+  it.each([
+    ['u', 'red'],
+    ['undo', 'redo'],
+  ])('routes :%s and :%s through the shared UndoManager too', async (undo, redo) => {
+    const { cm, text } = await withLocalAndRemoteEdit()
+
+    Vim.handleEx(cm, undo)
+    expect(text.toString()).toBe('theirs')
+
+    Vim.handleEx(cm, redo)
     expect(text.toString()).toBe('mine theirs')
   })
 })

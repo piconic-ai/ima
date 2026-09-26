@@ -40,14 +40,19 @@ export function saveVimMode(on: boolean, store: Store | null = defaultStore()): 
  * UndoManager instead, which only tracks this browser's edits.
  */
 export async function vimExtension(undoManager: Y.UndoManager): Promise<Extension> {
-  const { CodeMirror, vim } = await import('@replit/codemirror-vim')
-  // A module-wide table, which is fine with one editor per page.
-  CodeMirror.commands.undo = () => {
+  const { CodeMirror, Vim, vim } = await import('@replit/codemirror-vim')
+  const undo = () => {
     undoManager.undo()
   }
-  CodeMirror.commands.redo = () => {
+  const redo = () => {
     undoManager.redo()
   }
+  // Module-wide tables, which is fine with one editor per page.
+  CodeMirror.commands.undo = undo
+  CodeMirror.commands.redo = redo
+  // The ex commands copied the original functions when the module loaded.
+  Vim.defineEx('undo', 'u', undo)
+  Vim.defineEx('redo', 'red', redo)
   return vim({ status: true })
 }
 
