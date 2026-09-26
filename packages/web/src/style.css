@@ -433,7 +433,7 @@ main.editor[data-resizing] iframe {
 .preview table {
   display: block;
   width: max-content;
-  max-width: 100%;
+  max-width: min(100%, 820px);
   overflow: auto;
   border-spacing: 0;
   border-collapse: collapse;
@@ -463,6 +463,7 @@ main.editor[data-resizing] iframe {
 }
 .preview video {
   display: block;
+  max-width: min(100%, 820px);
 }
 .preview .embed {
   aspect-ratio: 16 / 9;
