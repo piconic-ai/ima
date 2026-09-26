@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/piconic-ai/ima/internal/protocol"
 )
@@ -18,16 +19,24 @@ type ui struct {
 	out   io.Writer
 	tty   bool
 	color bool
+	// width is the terminal's width in columns, or 0 if unknown.
+	width func() int
 
 	mu       sync.Mutex
 	live     bool
 	status   protocol.Status
 	people   []string
 	lastLine string
+	// signInRows is how many terminal rows the sign-in block takes, so it can
+	// be cleared once signed in.
+	signInRows int
 }
 
-func newUI(out io.Writer, tty, noColor bool) *ui {
-	return &ui{out: out, tty: tty, color: tty && !noColor, status: protocol.StatusConnecting}
+func newUI(out io.Writer, tty, noColor bool, width func() int) *ui {
+	if width == nil {
+		width = func() int { return 0 }
+	}
+	return &ui{out: out, tty: tty, color: tty && !noColor, width: width, status: protocol.StatusConnecting}
 }
 
 func (u *ui) paint(code, s string) string {
@@ -57,21 +66,50 @@ func (u *ui) print(lines ...string) {
 
 // signIn is shown while the browser is open to sign in.
 func (u *ui) signIn(host, url string) {
-	u.print(
+	lines := []string{
 		"",
-		u.bold("Sign in to "+host),
+		"Sign in to " + host,
 		"Your browser opened. Sign in there, then come back here.",
 		"",
-		u.dim("If it did not open, use this link:"),
-		u.dim(url),
-	)
+		"If it did not open, use this link:",
+		url,
+	}
+	u.print("", u.bold(lines[1]), lines[2], "", u.dim(lines[4]), u.dim(lines[5]))
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.signInRows = rows(lines, u.width())
 }
 
+// signedIn replaces the sign-in block, which is no longer needed.
 func (u *ui) signedIn(email string) {
-	if email == "" {
-		return
+	u.mu.Lock()
+	if u.tty && u.signInRows > 0 {
+		// Up to where the block started, then clear to the end of the screen.
+		fmt.Fprintf(u.out, "\x1b[%dA\r\x1b[J", u.signInRows)
 	}
-	u.print("", u.green("✓")+" Signed in as "+email)
+	u.signInRows = 0
+	u.mu.Unlock()
+	if email != "" {
+		u.print("", u.green("✓")+" Signed in as "+email)
+	}
+}
+
+// rows counts the terminal rows lines take once indented and wrapped at
+// width columns. Lines are plain text; every character is one column wide.
+func rows(lines []string, width int) int {
+	n := 0
+	for _, line := range lines {
+		if line != "" {
+			line = "  " + line
+		}
+		if l := utf8.RuneCountInString(line); width > 0 && l > width {
+			n += (l + width - 1) / width
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // sharing shows the link to send, then starts the live line.

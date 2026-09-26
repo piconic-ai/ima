@@ -9,7 +9,7 @@ import (
 
 func TestUIWithoutTerminal(t *testing.T) {
 	var out strings.Builder
-	u := newUI(&out, false, false)
+	u := newUI(&out, false, false, nil)
 	u.setStatus(protocol.StatusConnected) // not shown before sharing
 	u.signIn("ima.example.com", "https://ima.example.com/cdn-cgi/access/cli?token=abc")
 	u.signedIn("k@example.com")
@@ -61,7 +61,7 @@ func TestUIWithoutTerminal(t *testing.T) {
 
 func TestUIOnTerminal(t *testing.T) {
 	var out strings.Builder
-	u := newUI(&out, true, false)
+	u := newUI(&out, true, false, nil)
 	u.sharing("notes.md", "https://ima.example.com/r/AAAA#key", false)
 	u.setStatus(protocol.StatusConnected)
 	u.stopLive()
@@ -84,11 +84,54 @@ func TestUIOnTerminal(t *testing.T) {
 
 func TestUIWithoutColor(t *testing.T) {
 	var out strings.Builder
-	u := newUI(&out, true, true) // NO_COLOR
+	u := newUI(&out, true, true, nil) // NO_COLOR
 	u.sharing("notes.md", "https://ima.example.com/r/AAAA#key", true)
 	u.saved("notes.md")
 	if got := out.String(); strings.Contains(got, "\x1b[1m") || strings.Contains(got, "\x1b[3") {
 		t.Fatalf("colors despite NO_COLOR: %q", got)
+	}
+}
+
+func TestUIClearsSignInOnTerminal(t *testing.T) {
+	var out strings.Builder
+	u := newUI(&out, true, false, func() int { return 40 })
+	u.signIn("ima.example.com", "https://ima.example.com/cdn-cgi/access/cli?token="+strings.Repeat("x", 60))
+	u.signedIn("k@example.com")
+	got := out.String()
+	// 9 rows at 40 columns: blank, "Sign in to…", "Your browser opened…"
+	// (58 columns, 2 rows), blank, "If it did not open…", and the URL
+	// (111 columns, 3 rows).
+	if !strings.Contains(got, "\x1b[9A\r\x1b[J\n  \x1b[32m✓\x1b[0m Signed in as k@example.com\n") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUIKeepsSignInWithoutTerminal(t *testing.T) {
+	var out strings.Builder
+	u := newUI(&out, false, false, nil)
+	u.signIn("ima.example.com", "https://ima.example.com/cdn-cgi/access/cli")
+	u.signedIn("")
+	if got := out.String(); strings.Contains(got, "\x1b[") || !strings.Contains(got, "Sign in to ima.example.com") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRows(t *testing.T) {
+	tests := []struct {
+		lines []string
+		width int
+		want  int
+	}{
+		{[]string{"", "abc"}, 80, 2},
+		{[]string{"abc"}, 0, 1},                         // unknown width
+		{[]string{strings.Repeat("a", 38)}, 40, 1},      // exactly fills the row
+		{[]string{strings.Repeat("a", 39)}, 40, 2},      // one more wraps
+		{[]string{"", strings.Repeat("a", 118)}, 40, 4}, // 120 columns
+	}
+	for _, tt := range tests {
+		if got := rows(tt.lines, tt.width); got != tt.want {
+			t.Errorf("rows(%q, %d) = %d, want %d", tt.lines, tt.width, got, tt.want)
+		}
 	}
 }
 

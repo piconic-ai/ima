@@ -89,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ima:", err)
 		return 2
 	}
-	out := newUI(stdout, isTerminal(stdout), os.Getenv("NO_COLOR") != "")
+	out := newUI(stdout, isTerminal(stdout), os.Getenv("NO_COLOR") != "", func() int { return terminalWidth(stdout) })
 
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
@@ -143,6 +143,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	out.saved(arg)
 	return 0
+}
+
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	width, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return width
 }
 
 func isTerminal(w io.Writer) bool {
