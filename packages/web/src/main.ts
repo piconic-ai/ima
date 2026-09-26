@@ -1,28 +1,21 @@
 import { markdown } from '@codemirror/lang-markdown'
-import { Compartment, EditorState, type Extension } from '@codemirror/state'
-import { EditorView } from '@codemirror/view'
+import { Compartment, EditorState, type Extension, Prec } from '@codemirror/state'
+import { EditorView, keymap } from '@codemirror/view'
 import { importKey, RoomClient, type RoomStatus } from '@ima/protocol'
 import { basicSetup } from 'codemirror'
-import { yCollab } from 'y-codemirror.next'
+import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
+import { h } from './dom.ts'
 import { avatarFor, fetchIdentity, initials } from './identity.ts'
 import { resolveLanguage } from './language.ts'
 import { colorFor, parseRoomLocation, participants, roomSocketUrl } from './room.ts'
+import { createSettings } from './settings.ts'
+import { loadVimMode, VimToggle, vimExtension } from './vim.ts'
 import './style.css'
 
 const NAME_KEY = 'ima:name'
 const app = document.getElementById('app') as HTMLElement
-
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  props: Partial<HTMLElementTagNameMap[K]> = {},
-  children: (Node | string)[] = [],
-): HTMLElementTagNameMap[K] {
-  const el = Object.assign(document.createElement(tag), props)
-  el.append(...children)
-  return el
-}
 
 function loadName(): string | null {
   try {
@@ -111,13 +104,22 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
     }),
     reconnect,
   ])
+  const settings = createSettings()
   const main = h('main', { className: 'editor' })
   app.replaceChildren(
-    h('header', {}, [h('span', { className: 'brand', textContent: 'ima' }), file, status, people]),
+    h('header', {}, [
+      h('span', { className: 'brand', textContent: 'ima' }),
+      file,
+      status,
+      people,
+      settings.button,
+    ]),
+    settings.panel,
     banner,
     main,
   )
 
+  const vimMode = new Compartment()
   const editable = new Compartment()
   const language = new Compartment()
   // Reused so switching back to Markdown does not reparse the document.
@@ -127,13 +129,30 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
   const editor = new EditorView({
     parent: main,
     extensions: [
+      // The Vim keymap must see keys before basicSetup's.
+      vimMode.of([]),
       basicSetup,
+      // Undo only this browser's edits, not everyone's.
+      Prec.high(keymap.of(yUndoManagerKeymap)),
       language.of(markdownSupport),
       EditorView.lineWrapping,
       editable.of([]),
       yCollab(text, awareness, { undoManager }),
     ],
   })
+
+  const vim = new VimToggle(editor, vimMode, () => vimExtension(undoManager))
+  const setVim = async (on: boolean) => {
+    if (!(await vim.set(on))) vimToggle.set(vim.on)
+  }
+  const vimOn = loadVimMode()
+  const vimToggle = settings.addToggle({
+    label: 'Vim keybindings',
+    hint: 'Only in this browser.',
+    checked: vimOn,
+    onChange: (on) => void setVim(on),
+  })
+  if (vimOn) void setVim(true)
 
   const setStatus = (s: RoomStatus) => {
     status.dataset.status = s
