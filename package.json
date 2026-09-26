@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "deploy": "pnpm --filter @ima/worker run deploy",
+    "deploy:lab": "pnpm --filter @ima/worker run deploy:lab",
     "preview": "pnpm --filter @ima/worker run preview",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

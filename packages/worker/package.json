@@ -9,6 +9,7 @@
     "cf-typegen": "wrangler types",
     "typecheck": "tsc -p .",
     "test": "vitest run",
+    "deploy:lab": "pnpm --filter @ima/web build && wrangler deploy --env lab",
     "preview": "pnpm --filter @ima/web build && wrangler preview"
   },
   "dependencies": {

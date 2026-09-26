@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -42,5 +44,33 @@ func TestStatusLine(t *testing.T) {
 	want := "● connected · waiting for others\n● connected · 1 other here\n● connected · 2 others here\n"
 	if out.String() != want {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestAccessHeader(t *testing.T) {
+	tests := []struct {
+		env     map[string]string
+		want    http.Header
+		wantErr string
+	}{
+		{env: nil, want: nil},
+		{
+			env:  map[string]string{"IMA_ACCESS_CLIENT_ID": "id.access", "IMA_ACCESS_CLIENT_SECRET": "secret"},
+			want: http.Header{"Cf-Access-Client-Id": {"id.access"}, "Cf-Access-Client-Secret": {"secret"}},
+		},
+		{env: map[string]string{"IMA_ACCESS_CLIENT_ID": "id.access"}, wantErr: "set both"},
+		{env: map[string]string{"IMA_ACCESS_CLIENT_SECRET": "secret"}, wantErr: "set both"},
+	}
+	for _, tt := range tests {
+		got, err := accessHeader(func(k string) string { return tt.env[k] })
+		if tt.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("accessHeader(%v) err = %v", tt.env, err)
+			}
+			continue
+		}
+		if err != nil || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("accessHeader(%v) = %v, %v", tt.env, got, err)
+		}
 	}
 }

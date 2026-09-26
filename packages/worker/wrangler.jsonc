@@ -46,5 +46,22 @@
       "logs": { "enabled": true, "invocation_logs": true },
       "traces": { "enabled": true, "head_sampling_rate": 1 }
     }
+  },
+  "env": {
+    // A separate Worker (`ima-lab`) for trying things that should not touch
+    // production, such as putting the whole host behind Cloudflare Access.
+    // It is also a rehearsal of self-hosting: a second copy of ima deployed
+    // from this repository. Deploy it by hand with `pnpm run deploy:lab`;
+    // Workers Builds never deploys it.
+    "lab": {
+      "name": "ima-lab",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [{ "pattern": "ima-lab.piconic.ai", "custom_domain": true }],
+      "durable_objects": {
+        "bindings": [{ "name": "ROOM", "class_name": "Room" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+    }
   }
 }
