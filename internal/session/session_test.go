@@ -199,19 +199,19 @@ func TestSendsHeaderToServer(t *testing.T) {
 	defer server.Close()
 	file := filepath.Join(t.TempDir(), "notes.md")
 	_ = os.WriteFile(file, []byte("x"), 0o644)
-	header := http.Header{"Cf-Access-Client-Id": {"id.access"}}
+	header := http.Header{"Cf-Access-Token": {"user-token"}}
 	s, err := Start(context.Background(), Options{File: file, Server: server.URL, Header: header, Dial: relay.Dial})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Stop()
-	if v := got.Get("CF-Access-Client-Id"); v != "id.access" {
-		t.Fatalf("room request CF-Access-Client-Id = %q", v)
+	if v := got.Get("Cf-Access-Token"); v != "user-token" {
+		t.Fatalf("room request Cf-Access-Token = %q", v)
 	}
 	prototest.WaitFor(t, wait, func() bool { return len(relay.Headers()) == 1 }, "dial")
 	ws := relay.Headers()[0]
-	if v := ws.Get("CF-Access-Client-Id"); v != "id.access" {
-		t.Fatalf("WebSocket CF-Access-Client-Id = %q", v)
+	if v := ws.Get("Cf-Access-Token"); v != "user-token" {
+		t.Fatalf("WebSocket Cf-Access-Token = %q", v)
 	}
 	if v := ws.Get("Authorization"); v != "Bearer host-token" {
 		t.Fatalf("WebSocket Authorization = %q", v)
@@ -228,7 +228,6 @@ func TestExplainsCloudflareAccess(t *testing.T) {
 		want   string
 	}{
 		{"no credentials", nil, "Cloudflare Access sent us to its login page"},
-		{"rejected service token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "Cloudflare Access sent us to its login page"},
 		{"rejected user token", http.Header{"Cf-Access-Token": {"expired"}}, "Cloudflare Access sent us to its login page"},
 	}
 	for _, tt := range tests {

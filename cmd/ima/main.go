@@ -45,12 +45,9 @@ Share a local Markdown file and co-edit it with others in their browser.
 Edits are written back to the file. Press Ctrl+C to finish.
 
 Environment:
-  IMA_SERVER                ima server URL (default: ` + defaultServer + `)
-  IMA_ACCESS_CLIENT_ID      Cloudflare Access service token, for a server
-  IMA_ACCESS_CLIENT_SECRET  behind Cloudflare Access
+  IMA_SERVER  ima server URL (default: ` + defaultServer + `)
 
-A server behind Cloudflare Access signs you in with cloudflared, unless a
-service token is set.`
+A server behind Cloudflare Access signs you in with cloudflared.`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -84,11 +81,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if server == "" {
 		server = defaultServer
 	}
-	header, err := accessHeader(os.Getenv)
-	if err != nil {
-		fmt.Fprintln(stderr, "ima:", err)
-		return 2
-	}
 	out := newUI(stdout, isTerminal(stdout), os.Getenv("NO_COLOR") != "")
 
 	signals := make(chan os.Signal, 2)
@@ -112,7 +104,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	s, err := start(ctx, signIn, session.Options{
 		File:     file,
 		Server:   server,
-		Header:   header,
 		Name:     username(),
 		Watch:    true,
 		OnStatus: out.setStatus,
@@ -159,32 +150,16 @@ func username() string {
 	return u.Username
 }
 
-// accessHeader reads the Cloudflare Access service token to send to a server
-// behind Access.
-func accessHeader(getenv func(string) string) (http.Header, error) {
-	id, secret := getenv("IMA_ACCESS_CLIENT_ID"), getenv("IMA_ACCESS_CLIENT_SECRET")
-	if id == "" && secret == "" {
-		return nil, nil
-	}
-	if id == "" || secret == "" {
-		return nil, errors.New("set both IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET")
-	}
-	return http.Header{"Cf-Access-Client-Id": {id}, "Cf-Access-Client-Secret": {secret}}, nil
-}
-
 // start shares the file, signing in with Cloudflare Access when the server is
-// behind it and no service token was given.
+// behind it.
 func start(ctx context.Context, signIn func(context.Context, string) (string, error), opts session.Options) (*session.Session, error) {
 	s, err := session.Start(ctx, opts)
 	if !errors.Is(err, session.ErrBehindAccess) {
 		return s, err
 	}
-	if opts.Header != nil {
-		return nil, fmt.Errorf("%s did not accept the service token in IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET. Check that it has not expired and that a Service Auth policy allows it", opts.Server)
-	}
 	token, err := signIn(ctx, opts.Server)
 	if errors.Is(err, access.ErrNoCloudflared) {
-		return nil, fmt.Errorf("%s is behind Cloudflare Access. Install cloudflared to sign in (for example, brew install cloudflared), or set IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET to a service token", opts.Server)
+		return nil, fmt.Errorf("%s is behind Cloudflare Access. Install cloudflared to sign in (for example, brew install cloudflared) and run ima again", opts.Server)
 	}
 	if err != nil {
 		return nil, err

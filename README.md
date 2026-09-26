@@ -119,14 +119,6 @@ ima works on a host protected by a Cloudflare Access self-hosted application.
   browser opens once per Access session, and the host joins as themselves,
   with a Gravatar avatar from their email. Install cloudflared first, for
   example with `brew install cloudflared`.
-- Bots and CI can use a service token instead. Add a Service Auth policy to
-  the application and set the variables below, for example with
-  `op run --env-file=.env -- ima notes.md` to keep the secret in 1Password:
-
-```sh
-export IMA_ACCESS_CLIENT_ID=<client id>.access
-export IMA_ACCESS_CLIENT_SECRET=<client secret>
-```
 
 The token is read once when ima starts. If the Access session expires while
 sharing (24 hours by default), ima cannot reconnect until it is restarted.

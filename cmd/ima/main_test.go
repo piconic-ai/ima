@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -34,34 +33,6 @@ func TestRunArgs(t *testing.T) {
 		code := run(tt.args, &stdout, &stderr)
 		if code != tt.code || !strings.Contains(stdout.String(), tt.stdout) || !strings.Contains(stderr.String(), tt.stderr) {
 			t.Errorf("run(%q) = %d\nstdout: %s\nstderr: %s", tt.args, code, stdout.String(), stderr.String())
-		}
-	}
-}
-
-func TestAccessHeader(t *testing.T) {
-	tests := []struct {
-		env     map[string]string
-		want    http.Header
-		wantErr string
-	}{
-		{env: nil, want: nil},
-		{
-			env:  map[string]string{"IMA_ACCESS_CLIENT_ID": "id.access", "IMA_ACCESS_CLIENT_SECRET": "secret"},
-			want: http.Header{"Cf-Access-Client-Id": {"id.access"}, "Cf-Access-Client-Secret": {"secret"}},
-		},
-		{env: map[string]string{"IMA_ACCESS_CLIENT_ID": "id.access"}, wantErr: "set both"},
-		{env: map[string]string{"IMA_ACCESS_CLIENT_SECRET": "secret"}, wantErr: "set both"},
-	}
-	for _, tt := range tests {
-		got, err := accessHeader(func(k string) string { return tt.env[k] })
-		if tt.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("accessHeader(%v) err = %v", tt.env, err)
-			}
-			continue
-		}
-		if err != nil || !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("accessHeader(%v) = %v, %v", tt.env, got, err)
 		}
 	}
 }
@@ -127,19 +98,6 @@ func TestStartDoesNotSignInWithoutAccess(t *testing.T) {
 	defer s.Stop()
 }
 
-func TestStartKeepsServiceToken(t *testing.T) {
-	server := accessServer(t, userToken)
-	signIn := func(context.Context, string) (string, error) {
-		t.Fatal("signed in although a service token was given")
-		return "", nil
-	}
-	header := http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}
-	_, err := start(context.Background(), signIn, session.Options{File: tempFile(t), Server: server.URL, Header: header})
-	if err == nil || !strings.Contains(err.Error(), "did not accept the service token in IMA_ACCESS_CLIENT_ID") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
 func TestStartExplainsRejectedSignIn(t *testing.T) {
 	server := accessServer(t, "a token Access still accepts")
 	signIn := func(context.Context, string) (string, error) { return userToken, nil }
@@ -153,7 +111,7 @@ func TestStartExplainsMissingCloudflared(t *testing.T) {
 	server := accessServer(t, userToken)
 	signIn := func(context.Context, string) (string, error) { return "", access.ErrNoCloudflared }
 	_, err := start(context.Background(), signIn, session.Options{File: tempFile(t), Server: server.URL})
-	if err == nil || !strings.Contains(err.Error(), "Install cloudflared") || !strings.Contains(err.Error(), "IMA_ACCESS_CLIENT_ID") {
+	if err == nil || !strings.Contains(err.Error(), "Install cloudflared") {
 		t.Fatalf("err = %v", err)
 	}
 }

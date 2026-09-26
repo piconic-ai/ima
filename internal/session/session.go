@@ -33,8 +33,8 @@ type Options struct {
 	WriteDelay time.Duration
 	// Watch streams edits made to the file outside ima into the room.
 	Watch bool
-	// Header is sent with every request to the server, such as the service
-	// token of a server behind Cloudflare Access.
+	// Header is sent with every request to the server, such as the Cloudflare
+	// Access token of whoever signed in.
 	Header     http.Header
 	HTTPClient *http.Client
 	Dial       protocol.Dialer
