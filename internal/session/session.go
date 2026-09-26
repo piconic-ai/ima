@@ -28,7 +28,10 @@ type Options struct {
 	Name       string
 	WriteDelay time.Duration
 	// Watch streams edits made to the file outside ima into the room.
-	Watch      bool
+	Watch bool
+	// Header is sent with every request to the server, such as the service
+	// token of a server behind Cloudflare Access.
+	Header     http.Header
 	HTTPClient *http.Client
 	Dial       protocol.Dialer
 	OnStatus   func(protocol.Status)
@@ -87,7 +90,7 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 	}
 
 	server := strings.TrimRight(opts.Server, "/")
-	room, err := createRoom(ctx, opts.HTTPClient, server)
+	room, err := createRoom(ctx, opts.HTTPClient, server, opts.Header)
 	if err != nil {
 		return nil, err
 	}
@@ -121,16 +124,21 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 		OnError:          onError,
 		OnExternalChange: s.scheduleSyncFromDisk,
 	})
+	header := opts.Header.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	// Marks us as the host: the room closes for everyone once we leave.
+	header.Set("Authorization", "Bearer "+room.HostToken)
 	s.Client, err = protocol.NewClient(protocol.ClientOptions{
 		URL:       wsURL,
 		Key:       rawKey,
 		Doc:       doc,
 		Awareness: aw,
-		// Marks us as the host: the room closes for everyone once we leave.
-		Header:   http.Header{"Authorization": {"Bearer " + room.HostToken}},
-		Dial:     opts.Dial,
-		OnStatus: opts.OnStatus,
-		OnError:  onError,
+		Header:    header,
+		Dial:      opts.Dial,
+		OnStatus:  opts.OnStatus,
+		OnError:   onError,
 	})
 	if err != nil {
 		return nil, err
@@ -170,7 +178,7 @@ type room struct {
 	HostToken string `json:"hostToken"`
 }
 
-func createRoom(ctx context.Context, client *http.Client, server string) (*room, error) {
+func createRoom(ctx context.Context, client *http.Client, server string, header http.Header) (*room, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -178,11 +186,21 @@ func createRoom(ctx context.Context, client *http.Client, server string) (*room,
 	if err != nil {
 		return nil, err
 	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a room: %w", err)
 	}
 	defer res.Body.Close()
+	// Cloudflare Access answers requests it does not let through with its login page.
+	if strings.HasPrefix(res.Request.URL.Path, "/cdn-cgi/access/") {
+		if header.Get("CF-Access-Client-Id") != "" {
+			return nil, fmt.Errorf("failed to create a room: %s is behind Cloudflare Access and did not accept the service token in IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET", server)
+		}
+		return nil, fmt.Errorf("failed to create a room: %s is behind Cloudflare Access; set IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET to a service token", server)
+	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return nil, fmt.Errorf("failed to create a room on %s: %s", server, res.Status)
 	}

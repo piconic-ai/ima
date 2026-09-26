@@ -41,4 +41,14 @@ describe('participants', () => {
     expect(list[0]?.isHost).toBe(true)
     expect(list[1]?.isSelf).toBe(true)
   })
+
+  it('keeps avatars only from known hosts', () => {
+    const states = new Map<number, Record<string, unknown>>([
+      [1, { user: { name: 'A', avatar: 'https://gravatar.com/avatar/x' } }],
+      [2, { user: { name: 'B', avatar: 'https://tracker.example/pixel.gif' } }],
+    ])
+    const [a, b] = participants(states, 0)
+    expect(a?.avatar).toBe('https://gravatar.com/avatar/x')
+    expect(b && 'avatar' in b).toBe(false)
+  })
 })

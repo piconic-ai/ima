@@ -1,3 +1,5 @@
+import { safeAvatar } from './identity.ts'
+
 export interface RoomLocation {
   id: string
   key: string
@@ -20,6 +22,8 @@ export interface Participant {
   clientId: number
   name: string
   color: string
+  /** Only from hosts we allow; see safeAvatar. */
+  avatar?: string
   isHost: boolean
   isSelf: boolean
 }
@@ -29,13 +33,15 @@ type State = { [key: string]: unknown }
 export function participants(states: Map<number, State>, selfId: number): Participant[] {
   const list: Participant[] = []
   for (const [clientId, state] of states) {
-    const user = (state.user ?? {}) as { name?: unknown; color?: unknown }
+    const user = (state.user ?? {}) as { name?: unknown; color?: unknown; avatar?: unknown }
     const name = typeof user.name === 'string' ? user.name : state.name
     const isHost = state.role === 'host'
+    const avatar = safeAvatar(user.avatar)
     list.push({
       clientId,
       name: typeof name === 'string' && name ? name : 'anonymous',
       color: typeof user.color === 'string' ? user.color : isHost ? '#1f7a64' : '#7a828d',
+      ...(avatar && { avatar }),
       isHost,
       isSelf: clientId === selfId,
     })

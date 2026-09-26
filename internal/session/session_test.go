@@ -187,6 +187,69 @@ func TestExplainsWhyRoomCannotBeCreated(t *testing.T) {
 	}
 }
 
+func TestSendsHeaderToServer(t *testing.T) {
+	relay := prototest.NewRelay(true)
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "AAAAAAAAAAAAAAAAAAAAAA", "hostToken": "host-token"})
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "notes.md")
+	_ = os.WriteFile(file, []byte("x"), 0o644)
+	header := http.Header{"Cf-Access-Client-Id": {"id.access"}}
+	s, err := Start(context.Background(), Options{File: file, Server: server.URL, Header: header, Dial: relay.Dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	if v := got.Get("CF-Access-Client-Id"); v != "id.access" {
+		t.Fatalf("room request CF-Access-Client-Id = %q", v)
+	}
+	prototest.WaitFor(t, wait, func() bool { return len(relay.Headers()) == 1 }, "dial")
+	ws := relay.Headers()[0]
+	if v := ws.Get("CF-Access-Client-Id"); v != "id.access" {
+		t.Fatalf("WebSocket CF-Access-Client-Id = %q", v)
+	}
+	if v := ws.Get("Authorization"); v != "Bearer host-token" {
+		t.Fatalf("WebSocket Authorization = %q", v)
+	}
+	if header.Get("Authorization") != "" {
+		t.Fatal("the caller's header was modified")
+	}
+}
+
+func TestExplainsCloudflareAccess(t *testing.T) {
+	tests := []struct {
+		name   string
+		header http.Header
+		want   string
+	}{
+		{"no token", nil, "is behind Cloudflare Access; set IMA_ACCESS_CLIENT_ID"},
+		{"rejected token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "did not accept the service token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Access redirects to its login page instead of letting the request through.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/cdn-cgi/access/") {
+					_, _ = w.Write([]byte("<html>Sign in</html>"))
+					return
+				}
+				http.Redirect(w, r, "/cdn-cgi/access/login/ima-lab.example", http.StatusFound)
+			}))
+			defer server.Close()
+			file := filepath.Join(t.TempDir(), "notes.md")
+			_ = os.WriteFile(file, []byte("x"), 0o644)
+			_, err := Start(context.Background(), Options{File: file, Server: server.URL, Header: tt.header})
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), server.URL) {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
 func TestServesFileAndWritesBackGuestEdits(t *testing.T) {
 	f := setup(t, "# notes\n", setupOpts{})
 	g := joinAsGuest(t, f.relay, f.session.URL)

@@ -6,6 +6,7 @@ import { basicSetup } from 'codemirror'
 import { yCollab } from 'y-codemirror.next'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
+import { avatarFor, fetchIdentity, initials } from './identity.ts'
 import { colorFor, parseRoomLocation, participants, roomSocketUrl } from './room.ts'
 import './style.css'
 
@@ -84,12 +85,17 @@ function askName(): Promise<string> {
   })
 }
 
-async function joinRoom(id: string, key: string, name: string): Promise<void> {
+interface Me {
+  name: string
+  avatar?: string
+}
+
+async function joinRoom(id: string, key: string, me: Me): Promise<void> {
   const doc = new Y.Doc()
   const text = doc.getText('content')
   const awareness = new Awareness(doc)
   const color = colorFor(doc.clientID)
-  awareness.setLocalState({ user: { name, color, colorLight: `${color}33` } })
+  awareness.setLocalState({ user: { ...me, color, colorLight: `${color}33` } })
 
   const status = h('span', { className: 'status' }, [h('span', { className: 'dot' }), h('span')])
   const file = h('span', { className: 'file' })
@@ -146,9 +152,15 @@ async function joinRoom(id: string, key: string, name: string): Promise<void> {
     const list = participants(awareness.getStates(), doc.clientID)
     people.replaceChildren(
       ...list.map((p) => {
-        const li = h('li', {
-          textContent: `${p.name}${p.isHost ? ' (host)' : ''}${p.isSelf ? ' (you)' : ''}`,
-        })
+        const face = h('span', { className: 'avatar', textContent: initials(p.name) })
+        if (p.avatar) {
+          const img = h('img', { src: p.avatar, alt: '', referrerPolicy: 'no-referrer' })
+          // Unknown to Gravatar (d=404) or blocked: keep the initials.
+          img.addEventListener('error', () => img.remove())
+          face.append(img)
+        }
+        const label = `${p.name}${p.isHost ? ' (host)' : ''}${p.isSelf ? ' (you)' : ''}`
+        const li = h('li', { title: label }, [face, h('span', { textContent: label })])
         li.style.setProperty('--c', p.color)
         return li
       }),
@@ -191,8 +203,12 @@ async function start(): Promise<void> {
     ])
     return
   }
-  const name = loadName() ?? (await askName())
-  await joinRoom(room.id, room.key, name)
+  // Behind Cloudflare Access we already know who you are.
+  const identity = await fetchIdentity()
+  const me: Me = identity
+    ? { name: identity.name, avatar: await avatarFor(identity) }
+    : { name: loadName() ?? (await askName()) }
+  await joinRoom(room.id, room.key, me)
 }
 
 void start()

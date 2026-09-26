@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"os/user"
@@ -41,7 +43,9 @@ Share a local Markdown file and co-edit it with others in their browser.
 Edits are written back to the file. Press Ctrl+C to finish.
 
 Environment:
-  IMA_SERVER  ima server URL (default: ` + defaultServer + `)`
+  IMA_SERVER                ima server URL (default: ` + defaultServer + `)
+  IMA_ACCESS_CLIENT_ID      Cloudflare Access service token, for a server
+  IMA_ACCESS_CLIENT_SECRET  behind Cloudflare Access`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -75,6 +79,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if server == "" {
 		server = defaultServer
 	}
+	header, err := accessHeader(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "ima:", err)
+		return 2
+	}
 	status := &statusLine{out: stdout, tty: isTerminal(stdout), status: protocol.StatusConnecting}
 
 	signals := make(chan os.Signal, 2)
@@ -89,6 +98,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	s, err := session.Start(ctx, session.Options{
 		File:     file,
 		Server:   server,
+		Header:   header,
 		Name:     username(),
 		Watch:    true,
 		OnStatus: status.setStatus,
@@ -205,4 +215,17 @@ func username() string {
 		return ""
 	}
 	return u.Username
+}
+
+// accessHeader reads the Cloudflare Access service token to send to a server
+// behind Access.
+func accessHeader(getenv func(string) string) (http.Header, error) {
+	id, secret := getenv("IMA_ACCESS_CLIENT_ID"), getenv("IMA_ACCESS_CLIENT_SECRET")
+	if id == "" && secret == "" {
+		return nil, nil
+	}
+	if id == "" || secret == "" {
+		return nil, errors.New("set both IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET")
+	}
+	return http.Header{"Cf-Access-Client-Id": {id}, "Cf-Access-Client-Secret": {secret}}, nil
 }
