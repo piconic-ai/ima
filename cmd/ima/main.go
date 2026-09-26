@@ -175,8 +175,11 @@ func accessHeader(getenv func(string) string) (http.Header, error) {
 // behind it and no service token was given.
 func start(ctx context.Context, signIn func(context.Context, string) (string, error), opts session.Options) (*session.Session, error) {
 	s, err := session.Start(ctx, opts)
-	if !errors.Is(err, session.ErrBehindAccess) || opts.Header != nil {
+	if !errors.Is(err, session.ErrBehindAccess) {
 		return s, err
+	}
+	if opts.Header != nil {
+		return nil, fmt.Errorf("%s did not accept the service token in IMA_ACCESS_CLIENT_ID and IMA_ACCESS_CLIENT_SECRET. Check that it has not expired and that a Service Auth policy allows it", opts.Server)
 	}
 	token, err := signIn(ctx, opts.Server)
 	if errors.Is(err, access.ErrNoCloudflared) {
@@ -189,7 +192,14 @@ func start(ctx context.Context, signIn func(context.Context, string) (string, er
 	if email := access.Email(token); email != "" {
 		opts.Avatar = gravatarURL(email)
 	}
-	return session.Start(ctx, opts)
+	s, err = session.Start(ctx, opts)
+	if errors.Is(err, session.ErrBehindAccess) {
+		// Signed in, yet turned away: the session was revoked, or this
+		// account is not allowed in. cloudflared keeps the token until it
+		// expires, so it has to be removed to sign in again.
+		return nil, fmt.Errorf("%s did not accept your sign-in. To sign in again, remove the saved sign-in (rm ~/.cloudflared/*-token) and run ima again. If it still fails, ask whoever runs the server to let you in", opts.Server)
+	}
+	return s, err
 }
 
 // gravatarURL matches the web editor's: 404 for unknown emails, so others see initials.

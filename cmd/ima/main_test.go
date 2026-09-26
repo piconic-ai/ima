@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -136,7 +135,16 @@ func TestStartKeepsServiceToken(t *testing.T) {
 	}
 	header := http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}
 	_, err := start(context.Background(), signIn, session.Options{File: tempFile(t), Server: server.URL, Header: header})
-	if !errors.Is(err, session.ErrBehindAccess) {
+	if err == nil || !strings.Contains(err.Error(), "did not accept the service token in IMA_ACCESS_CLIENT_ID") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStartExplainsRejectedSignIn(t *testing.T) {
+	server := accessServer(t, "a token Access still accepts")
+	signIn := func(context.Context, string) (string, error) { return userToken, nil }
+	_, err := start(context.Background(), signIn, session.Options{File: tempFile(t), Server: server.URL})
+	if err == nil || !strings.Contains(err.Error(), "did not accept your sign-in") || !strings.Contains(err.Error(), "rm ~/.cloudflared/*-token") {
 		t.Fatalf("err = %v", err)
 	}
 }

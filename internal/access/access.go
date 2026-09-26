@@ -62,10 +62,11 @@ func (c *Cloudflared) Token(ctx context.Context, app string) (string, error) {
 		}
 		return strings.TrimSpace(out.String()), nil
 	}
-	// A token that is about to expire would not last through connecting.
+	// A token that is about to expire would not last through connecting, so
+	// try to get a fresh one first.
 	if token, err := cached(); errors.Is(err, ErrNoCloudflared) {
 		return "", err
-	} else if err == nil && usable(token, now()) {
+	} else if err == nil && validFor(token, now(), time.Minute) {
 		return token, nil
 	}
 
@@ -81,8 +82,11 @@ func (c *Cloudflared) Token(ctx context.Context, app string) (string, error) {
 		}
 		return "", fmt.Errorf("could not sign in to %s: %w", app, err)
 	}
+	// cloudflared hands back a cached token until it has expired, even one
+	// with seconds left, so take whatever has not expired yet. If it expires
+	// while sharing, ima cannot reconnect; see the README.
 	token, err := cached()
-	if err != nil || !usable(token, now()) {
+	if err != nil || !validFor(token, now(), 0) {
 		return "", fmt.Errorf("cloudflared signed in to %s but returned no usable token", app)
 	}
 	return token, nil
@@ -135,9 +139,10 @@ func parse(token string) (claims, bool) {
 	return c, true
 }
 
-func usable(token string, now time.Time) bool {
+// validFor tells whether token has not expired by now+margin.
+func validFor(token string, now time.Time, margin time.Duration) bool {
 	c, ok := parse(token)
-	return ok && c.Exp > now.Add(time.Minute).Unix()
+	return ok && c.Exp > now.Add(margin).Unix()
 }
 
 // Email is the email of the user a token was issued to, or "".

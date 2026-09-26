@@ -23,6 +23,7 @@ type fakeCloudflared struct {
 	token    string // what `access token` prints; "" means not signed in
 	login    string // what `access login` stores
 	loginErr error
+	now      time.Time
 	calls    []string
 }
 
@@ -42,7 +43,10 @@ func (f *fakeCloudflared) run(_ context.Context, stdout, stderr io.Writer, args 
 		if f.loginErr != nil {
 			return f.loginErr
 		}
-		f.token = f.login
+		// Like cloudflared, keep a cached token until it has expired.
+		if c, ok := parse(f.token); !ok || c.Exp <= f.now.Unix() {
+			f.token = f.login
+		}
 	}
 	return nil
 }
@@ -62,10 +66,9 @@ func TestTokenUsesSignedInToken(t *testing.T) {
 func TestTokenSignsInWhenNeeded(t *testing.T) {
 	fresh := jwt("k@example.com", now.Add(24*time.Hour))
 	for name, f := range map[string]*fakeCloudflared{
-		"not signed in":   {login: fresh},
-		"expired":         {token: jwt("k@example.com", now.Add(-time.Hour)), login: fresh},
-		"about to expire": {token: jwt("k@example.com", now.Add(10*time.Second)), login: fresh},
-		"not a JWT":       {token: "garbage", login: fresh},
+		"not signed in": {login: fresh, now: now},
+		"expired":       {token: jwt("k@example.com", now.Add(-time.Hour)), login: fresh, now: now},
+		"not a JWT":     {token: "garbage", login: fresh, now: now},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var urls []string
@@ -81,6 +84,20 @@ func TestTokenSignsInWhenNeeded(t *testing.T) {
 				t.Fatalf("sign-in URLs = %q", urls)
 			}
 		})
+	}
+}
+
+// cloudflared does not replace a token that has not expired yet, so in the
+// last minute of an Access session ima gets the same token back after login.
+func TestTokenAboutToExpire(t *testing.T) {
+	last := jwt("k@example.com", now.Add(10*time.Second))
+	f := &fakeCloudflared{token: last, login: jwt("k@example.com", now.Add(24*time.Hour)), now: now}
+	got, err := (&Cloudflared{Run: f.run, Now: func() time.Time { return now }}).Token(context.Background(), "https://ima.example.com")
+	if err != nil || got != last {
+		t.Fatalf("Token = %q, %v", got, err)
+	}
+	if !strings.Contains(fmt.Sprint(f.calls), "access login") {
+		t.Fatalf("did not try to sign in: %q", f.calls)
 	}
 }
 

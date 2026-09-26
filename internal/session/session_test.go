@@ -227,9 +227,9 @@ func TestExplainsCloudflareAccess(t *testing.T) {
 		header http.Header
 		want   string
 	}{
-		{"no credentials", nil, "is behind Cloudflare Access"},
-		{"rejected service token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "did not accept our credentials"},
-		{"rejected user token", http.Header{"Cf-Access-Token": {"expired"}}, "did not accept our credentials"},
+		{"no credentials", nil, "Cloudflare Access sent us to its login page"},
+		{"rejected service token", http.Header{"Cf-Access-Client-Id": {"id"}, "Cf-Access-Client-Secret": {"bad"}}, "Cloudflare Access sent us to its login page"},
+		{"rejected user token", http.Header{"Cf-Access-Token": {"expired"}}, "Cloudflare Access sent us to its login page"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -316,6 +316,12 @@ func TestDisplayName(t *testing.T) {
 		{map[string]any{"name": "kfly8"}, "kfly8"},
 		{map[string]any{"user": map[string]any{"name": ""}, "name": "bob"}, "bob"},
 		{map[string]any{"user": "x"}, "Someone"},
+		// Names reach the host's terminal: no escapes, cursor moves or bidi tricks.
+		{map[string]any{"user": map[string]any{"name": "\x1b[2J\x1b]0;pwned\x07Eve"}}, "[2J]0;pwnedEve"},
+		{map[string]any{"user": map[string]any{"name": "Eve\r\nMallory"}}, "EveMallory"},
+		{map[string]any{"user": map[string]any{"name": "\u202eevE"}}, "evE"},
+		{map[string]any{"user": map[string]any{"name": "\x1b\x07"}, "name": "bob"}, "bob"},
+		{map[string]any{"user": map[string]any{"name": strings.Repeat("あ", 50)}}, strings.Repeat("あ", 40) + "…"},
 		{map[string]any{}, "Someone"},
 	}
 	for _, tt := range tests {

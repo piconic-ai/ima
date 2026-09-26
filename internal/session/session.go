@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/piconic-ai/ima/internal/filewriter"
@@ -186,17 +187,38 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 // user.name (browsers) or name (older hosts).
 func displayName(state map[string]any) string {
 	user, _ := state["user"].(map[string]any)
-	if name, _ := user["name"].(string); strings.TrimSpace(name) != "" {
-		return strings.TrimSpace(name)
-	}
-	if name, _ := state["name"].(string); strings.TrimSpace(name) != "" {
-		return strings.TrimSpace(name)
+	for _, v := range []any{user["name"], state["name"]} {
+		name, _ := v.(string)
+		if name = cleanName(name); name != "" {
+			return name
+		}
 	}
 	return "Someone"
 }
 
-// ErrBehindAccess means Cloudflare Access sent us to its login page.
-var ErrBehindAccess = errors.New("is behind Cloudflare Access")
+// maxNameLength matches the web editor's limit on names.
+const maxNameLength = 40
+
+// cleanName makes a name safe to print. Names come from other people's
+// browsers and end up on the host's terminal, so anything that could move
+// the cursor, start an escape sequence or reorder the text is dropped.
+func cleanName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	if r := []rune(name); len(r) > maxNameLength {
+		name = strings.TrimSpace(string(r[:maxNameLength])) + "…"
+	}
+	return name
+}
+
+// ErrBehindAccess means Cloudflare Access sent us to its login page: we sent
+// no credentials, or Access did not accept them.
+var ErrBehindAccess = errors.New("Cloudflare Access sent us to its login page")
 
 type room struct {
 	ID        string `json:"id"`
@@ -221,10 +243,7 @@ func createRoom(ctx context.Context, client *http.Client, server string, header 
 	defer res.Body.Close()
 	// Cloudflare Access answers requests it does not let through with its login page.
 	if strings.HasPrefix(res.Request.URL.Path, "/cdn-cgi/access/") {
-		if header.Get("Cf-Access-Client-Id") != "" || header.Get("Cf-Access-Token") != "" {
-			return nil, fmt.Errorf("failed to create a room: %s did not accept our credentials: %w", server, ErrBehindAccess)
-		}
-		return nil, fmt.Errorf("failed to create a room: %s %w", server, ErrBehindAccess)
+		return nil, fmt.Errorf("failed to create a room on %s: %w", server, ErrBehindAccess)
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return nil, fmt.Errorf("failed to create a room on %s: %s", server, res.Status)

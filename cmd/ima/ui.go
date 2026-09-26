@@ -157,7 +157,7 @@ func (u *ui) liveLine() string {
 	}
 }
 
-// whoIsHere names up to two people, so the line stays short.
+// whoIsHere names up to three people and counts the rest, so the line stays short.
 func whoIsHere(names []string) string {
 	switch n := len(names); {
 	case n == 0:
