@@ -93,6 +93,20 @@ Workers Builds settings (Cloudflare dashboard → ima Worker → Settings → Bu
 | Non-production branch builds | enabled |
 | Preview command | `pnpm run preview` |
 
+### Lab
+
+`ima-lab.piconic.ai` is a second Worker (`ima-lab`) for experiments that should
+not touch production, such as putting the whole host behind Cloudflare Access.
+It is defined as the `lab` environment in `packages/worker/wrangler.jsonc`, has
+its own Durable Object namespace, and is deployed by hand:
+
+```sh
+pnpm run deploy:lab
+IMA_SERVER=https://ima-lab.piconic.ai go run ./cmd/ima notes.md
+```
+
+Deploying it is also a rehearsal of self-hosting ima on another Cloudflare account.
+
 The Worker runs on the Workers Free plan (100,000 requests a day). It uses a
 SQLite-backed Durable Object and no D1 or KV. `piconic.ai` must be on the same
 Cloudflare account for the custom domain.
