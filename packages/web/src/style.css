@@ -100,6 +100,21 @@ header {
   background: var(--c);
   white-space: nowrap;
 }
+.toggle {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--panel);
+}
 .avatar {
   position: relative;
   display: grid;
@@ -167,6 +182,11 @@ main.editor .cm-content {
 }
 .cm-focused {
   outline: none !important;
+}
+main.editor .cm-vim-panel {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 2px 8px;
 }
 
 .center {
