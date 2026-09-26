@@ -1,5 +1,5 @@
 import { markdown } from '@codemirror/lang-markdown'
-import { Compartment, EditorState } from '@codemirror/state'
+import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { importKey, RoomClient, type RoomStatus } from '@ima/protocol'
 import { basicSetup } from 'codemirror'
@@ -7,6 +7,7 @@ import { yCollab } from 'y-codemirror.next'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { avatarFor, fetchIdentity, initials } from './identity.ts'
+import { resolveLanguage } from './language.ts'
 import { colorFor, parseRoomLocation, participants, roomSocketUrl } from './room.ts'
 import './style.css'
 
@@ -48,7 +49,7 @@ function showCard(title: string, body: (Node | string)[]): HTMLElement {
 function showLanding(): void {
   showCard('ima', [
     h('p', {}, [
-      'Co-edit a local Markdown file, right now. Run ',
+      'Co-edit a local text file, right now. Run ',
       h('code', { textContent: 'ima notes.md' }),
       ' and share the link it prints. ',
       h('a', {
@@ -118,13 +119,16 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
   )
 
   const editable = new Compartment()
+  const language = new Compartment()
+  // Reused so switching back to Markdown does not reparse the document.
+  const markdownSupport = markdown()
   const readOnly = [EditorState.readOnly.of(true), EditorView.editable.of(false)]
   const undoManager = new Y.UndoManager(text)
   const editor = new EditorView({
     parent: main,
     extensions: [
       basicSetup,
-      markdown(),
+      language.of(markdownSupport),
       EditorView.lineWrapping,
       editable.of([]),
       yCollab(text, awareness, { undoManager }),
@@ -146,6 +150,29 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
       banner.hidden = false
       editor.dispatch({ effects: editable.reconfigure(readOnly) })
     }
+  }
+
+  // Markdown until the host tells us the file name; other languages load lazily.
+  let languageFor: string | undefined
+  const applyLanguage = async (fileName: string) => {
+    if (fileName === languageFor) return
+    languageFor = fileName
+    const lang = resolveLanguage(fileName)
+    let support: Extension
+    try {
+      support =
+        lang.kind === 'markdown'
+          ? markdownSupport
+          : lang.kind === 'plain'
+            ? []
+            : await lang.description.load()
+    } catch {
+      // Offline or a stale deploy: keep editing without highlighting.
+      support = []
+    }
+    // A newer file name may have arrived while the language was loading.
+    if (fileName !== languageFor) return
+    editor.dispatch({ effects: language.reconfigure(support) })
   }
 
   const renderPeople = () => {
@@ -170,6 +197,7 @@ async function joinRoom(id: string, key: string, me: Me): Promise<void> {
     if (typeof host?.file === 'string') {
       file.textContent = host.file
       document.title = `${host.file} · ima`
+      void applyLanguage(host.file)
     }
   }
 
