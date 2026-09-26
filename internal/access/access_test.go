@@ -77,8 +77,12 @@ func TestTokenSignsInWhenNeeded(t *testing.T) {
 			if err != nil || got != fresh {
 				t.Fatalf("Token = %q, %v", got, err)
 			}
-			if !strings.Contains(fmt.Sprint(f.calls), "access login --quiet --auto-close https://ima.example.com") {
+			if !strings.Contains(fmt.Sprint(f.calls), "access login --quiet https://ima.example.com") {
 				t.Fatalf("calls = %q", f.calls)
+			}
+			// Kept off for now; see the comment in Token.
+			if strings.Contains(fmt.Sprint(f.calls), "--auto-close") {
+				t.Fatalf("passes --auto-close: %q", f.calls)
 			}
 			if want := []string{"https://ima.example.com/cdn-cgi/access/cli?token=abc"}; fmt.Sprint(urls) != fmt.Sprint(want) {
 				t.Fatalf("sign-in URLs = %q", urls)

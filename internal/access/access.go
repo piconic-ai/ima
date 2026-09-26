@@ -70,13 +70,14 @@ func (c *Cloudflared) Token(ctx context.Context, app string) (string, error) {
 		return token, nil
 	}
 
-	// --quiet keeps the token itself out of the output.
+	// --quiet keeps the token itself out of the output. --auto-close is not
+	// used for now: the browser tab stays open after signing in.
 	out := &lineWatcher{onLine: func(line string) {
 		if c.OnSignIn != nil && strings.HasPrefix(line, "https://") && strings.Contains(line, "/cdn-cgi/access/cli") {
 			c.OnSignIn(line)
 		}
 	}}
-	if err := run(ctx, out, out, "access", "login", "--quiet", "--auto-close", app); err != nil {
+	if err := run(ctx, out, out, "access", "login", "--quiet", app); err != nil {
 		if msg := strings.TrimSpace(out.all.String()); msg != "" {
 			return "", fmt.Errorf("could not sign in to %s: %w\n%s", app, err, msg)
 		}
